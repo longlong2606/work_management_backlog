@@ -144,6 +144,51 @@
 .dl-session-actions { display: flex; gap: 8px; flex: none; }
 .dl-warn-text { color: #b45309; font-weight: 600; }
 
+/* ---------- Thẻ vừa chạm (chế độ quản lý thẻ) ---------- */
+.dl-scan {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-focus);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.dl-scan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.dl-scan-title { margin: 0; font-size: 15px; font-weight: 700; }
+.dl-scan-empty { margin: 0; padding: 16px; font-size: 14px; color: var(--text-muted); }
+.dl-scan-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.dl-scan-row:last-child { border-bottom: 0; }
+.dl-scan-row:first-child { background: #eff6ff; }
+.dl-scan-form { display: flex; gap: 8px; }
+.dl-scan-form input {
+  width: 220px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-main);
+  background: var(--bg-card);
+}
+.dl-scan-form input:focus { outline: 2px solid var(--primary-glow); border-color: var(--primary); }
+.dl-scan-actions { display: flex; align-items: center; gap: 4px; }
+.dl-scan-actions .dl-badge { margin-right: 8px; }
+
 /* ---------- Thông báo lỗi ---------- */
 .dl-alert {
   display: flex;
@@ -489,4 +534,7 @@
   .dl-row > span:nth-of-type(1) { grid-area: status; }
   .dl-row > span:nth-of-type(2) { grid-area: date; justify-self: end; }
   .dl-log { grid-template-columns: 44px 32px minmax(0, 1fr) auto; gap: 10px; }
+  .dl-scan-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .dl-scan-form, .dl-scan-actions { grid-column: 1 / -1; }
+  .dl-scan-form input { flex: 1; width: auto; min-width: 0; }
 }

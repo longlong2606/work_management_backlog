@@ -468,6 +468,13 @@ public class DoorSession
     public long? approved_at { get; set; }
     public long last_seen { get; set; }                // lần cuối khóa gọi lên
     public string? decided_by { get; set; }            // tên admin bấm Đồng ý/Từ chối/Lưu
+    public List<DoorScan> scans { get; set; } = new(); // [ESP-LOCK] thẻ chạm vào khóa trong phiên (mới nhất trước, tối đa 20)
+}
+
+public class DoorScan
+{
+    public string card_uid { get; set; } = "";
+    public long at { get; set; }                       // unix giây (UTC)
 }
 
 public static class DoorSessionStore
