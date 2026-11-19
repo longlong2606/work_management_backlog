@@ -456,3 +456,40 @@ public class UpdateDoorCardRequest
 }
 
 public record DoorSettingsRequest(string? key, int? relay_duration);
+
+// [ESP-LOCK] Phiên quản lý thẻ: giữ nút thoát hiểm 3s → web duyệt → sửa thẻ → Lưu.
+// Lưu trong RAM (phiên ngắn, tối đa ~11 phút); server khởi động lại thì phiên mất, khóa tự ngủ lại sau 30s.
+public class DoorSession
+{
+    public string id { get; set; } = "";
+    public string macid { get; set; } = "";
+    public string status { get; set; } = "pending";   // pending | approved | denied | saved | expired
+    public long created_at { get; set; }               // unix giây (UTC)
+    public long? approved_at { get; set; }
+    public long last_seen { get; set; }                // lần cuối khóa gọi lên
+    public string? decided_by { get; set; }            // tên admin bấm Đồng ý/Từ chối/Lưu
+}
+
+public static class DoorSessionStore
+{
+    public const int PENDING_TIMEOUT = 60;    // chờ admin Đồng ý
+    public const int APPROVED_TIMEOUT = 600;  // thời gian chỉnh sửa tối đa
+    public const int LOCK_SILENT_TIMEOUT = 35; // khóa không hỏi nữa (khóa tự bỏ sau 30s)
+
+    public static readonly object Sync = new();
+    public static readonly Dictionary<string, DoorSession> Sessions = new();
+
+    // Gọi trong lock(Sync): cập nhật trạng thái hết hạn theo giờ hiện tại.
+    public static void Expire(DoorSession s, long now)
+    {
+        if (s.status == "pending" && now - s.created_at > PENDING_TIMEOUT) s.status = "expired";
+        else if (s.status == "approved" && now - (s.approved_at ?? s.created_at) > APPROVED_TIMEOUT) s.status = "expired";
+        if ((s.status == "pending" || s.status == "approved") && now - s.last_seen > LOCK_SILENT_TIMEOUT) s.status = "expired";
+    }
+
+    public static void Cleanup(long now)
+    {
+        foreach (var k in Sessions.Where(kv => now - kv.Value.created_at > 3600).Select(kv => kv.Key).ToList())
+            Sessions.Remove(k);
+    }
+}
