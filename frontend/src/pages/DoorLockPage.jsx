@@ -6,7 +6,6 @@ import {
   ChevronDown,
   CircleAlert,
   DoorOpen,
-  KeyRound,
   Lock,
   LogIn,
   LogOut,
@@ -55,7 +54,6 @@ const dayLabel = (d) => {
   if (dayKey(d) === dayKey(yest)) return "Hôm qua";
   return d.toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "numeric", year: "numeric" });
 };
-const fmtCountdown = (s) => `${Math.floor(s / 60)}:${pad(s % 60)}`;
 
 // Phân loại một dòng lịch sử
 function classifyLog(log) {
@@ -160,69 +158,6 @@ function PersonPicker({ users, cards, value, onChange, currentUid = "", autoFocu
   );
 }
 
-// ---------- Thanh phiên quản lý thẻ ----------
-function SessionBanner({ session, now, busy, error, onAction, savedNotice }) {
-  if (savedNotice) {
-    return (
-      <div className="dl-session dl-session--done" role="status">
-        <div className="dl-session-icon"><Check size={20} /></div>
-        <div className="dl-session-text">
-          <strong>Đã lưu. Khóa cửa đang cập nhật danh sách thẻ.</strong>
-          <span>Khóa sẽ kêu 3 tiếng bíp khi xong, rồi hoạt động bình thường.</span>
-        </div>
-      </div>
-    );
-  }
-  if (!session) return null;
-
-  const left = Math.max(0, session.seconds_left - Math.floor((now - session._fetchedAt) / 1000));
-  const offline = !session.lock_online;
-
-  if (session.status === "pending") {
-    return (
-      <div className="dl-session dl-session--ask" role="alert">
-        <div className="dl-session-icon"><KeyRound size={20} /></div>
-        <div className="dl-session-text">
-          <strong>Khóa cửa xin vào chế độ quản lý thẻ</strong>
-          <span>
-            Có người vừa giữ nút trong cửa 2 giây. Đồng ý để thêm, xóa thẻ và cập nhật ngay xuống khóa.
-            <span className="dl-num"> Còn {left} giây.</span>
-          </span>
-          {error && <span className="dl-inline-error">{error}</span>}
-        </div>
-        <div className="dl-session-actions">
-          <button type="button" className="dl-btn" disabled={busy} onClick={() => onAction("deny")}>
-            Từ chối
-          </button>
-          <button type="button" className="dl-btn dl-btn--primary" disabled={busy} onClick={() => onAction("approve")}>
-            Đồng ý
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="dl-session dl-session--edit" role="status">
-      <div className="dl-session-icon"><Unlock size={20} /></div>
-      <div className="dl-session-text">
-        <strong>Đang trong chế độ quản lý thẻ</strong>
-        <span>
-          Thêm, đổi tên hoặc xóa thẻ bên dưới, xong bấm Lưu để gửi xuống khóa.
-          <span className="dl-num"> Còn {fmtCountdown(left)}.</span>
-          {offline && <span className="dl-warn-text"> Khóa đang mất kết nối.</span>}
-        </span>
-        {error && <span className="dl-inline-error">{error}</span>}
-      </div>
-      <div className="dl-session-actions">
-        <button type="button" className="dl-btn dl-btn--primary" disabled={busy} onClick={() => onAction("save")}>
-          <Check size={16} /> Lưu và gửi xuống khóa
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ---------- Trang ----------
 export function DoorLockPage() {
   const { user } = useAuth();
@@ -236,17 +171,9 @@ export function DoorLockPage() {
   const [query, setQuery] = useState("");
   const [logFilter, setLogFilter] = useState("all"); // all | in | out | denied
 
-  // Phiên quản lý thẻ
-  const [session, setSession] = useState(null);
-  const [sessionBusy, setSessionBusy] = useState(false);
-  const [sessionError, setSessionError] = useState("");
-  const [savedNotice, setSavedNotice] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  const [scans, setScans] = useState([]); // thẻ vừa chạm vào khóa trong phiên (mới nhất trước)
-  const hasSession = !!session;
-  const [scanPick, setScanPick] = useState({}); // người đang chọn cho từng thẻ vừa chạm
-  const [scanBusy, setScanBusy] = useState(null);
-  const [scanError, setScanError] = useState({});
+  // [1 NÚT] Chế độ quản lý thẻ trên web: bấm "Quản lý thẻ" mới hiện thêm / đổi người / tạm khóa / xóa.
+  // Khóa tự lấy danh sách mới ở lần thức dậy tiếp theo (không còn giữ nút 2 giây + Đồng ý / Lưu).
+  const [manage, setManage] = useState(false);
 
   // Nhân sự: thẻ chỉ được gắn cho người có trong danh sách này (1 người 1 thẻ)
   const [users, setUsers] = useState([]);
@@ -275,86 +202,34 @@ export function DoorLockPage() {
     }
   }, []);
 
-  const loadSession = useCallback(async () => {
-    try {
-      const r = await api.getDoorSession();
-      setSession(r.session ? { ...r.session, _fetchedAt: Date.now() } : null);
-      setScans(r.scans || []);
-    } catch {
-      /* mạng chập chờn: giữ trạng thái cũ, lần sau hỏi lại */
-    }
-  }, []);
-
-  // Tải dữ liệu + hỏi phiên định kỳ (dừng khi tab trình duyệt bị ẩn)
+  // Tải dữ liệu định kỳ (dừng khi tab trình duyệt bị ẩn)
   useEffect(() => {
     if (!canManage) return;
     loadAll();
-    loadSession();
-    // Có phiên quản lý thẻ: hỏi 1,5 giây/lần để thẻ vừa chạm hiện nhanh; không có thì 3 giây/lần
-    const fast = setInterval(() => {
-      if (!document.hidden) loadSession();
-    }, hasSession ? 1500 : 3000);
     const slow = setInterval(() => {
       if (!document.hidden) loadAll();
     }, 15000);
-    return () => {
-      clearInterval(fast);
-      clearInterval(slow);
-    };
-  }, [canManage, loadAll, loadSession, hasSession]);
+    return () => clearInterval(slow);
+  }, [canManage, loadAll]);
 
-  // Đồng hồ đếm ngược chỉ chạy khi có phiên
-  useEffect(() => {
-    if (!session) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [session]);
+  const refreshAll = () => loadAll();
 
-  const sessionAction = async (op) => {
-    if (!session) return;
-    setSessionBusy(true);
-    setSessionError("");
-    try {
-      const r = await api.doorSessionAction(session.id, op);
-      if (op === "save") {
-        setSession(null);
-        setSavedNotice(true);
-        setTimeout(() => setSavedNotice(false), 8000);
-      } else {
-        setSession(r.session && (r.session.status === "pending" || r.session.status === "approved")
-          ? { ...r.session, _fetchedAt: Date.now() }
-          : null);
-      }
-    } catch (e) {
-      setSessionError(e.message || "Không thực hiện được, thử lại.");
-      loadSession();
-    } finally {
-      setSessionBusy(false);
-    }
-  };
-
-  const refreshAll = () => Promise.all([loadAll(), loadSession()]);
-
-  // ----- Gắn thẻ với người (dùng chung cho hộp thoại và khung "Thẻ vừa chạm") -----
+  // ----- Gắn thẻ với người -----
   // Người đã có thẻ khác → hỏi "Thay thẻ cũ?" trước (server cũng chặn nếu không có replace).
   const otherCardOf = (userId, uid) =>
     cards.find((c) => c.user_id === userId && compactUid(c.card_uid) !== compactUid(uid));
 
   const sendLink = async (payload, source, replace) => {
-    const setBusy = source === "dialog" ? setSaving : (v) => setScanBusy(v ? payload.card_uid : null);
-    const setErr = (msg) =>
-      source === "dialog" ? setFormError(msg) : setScanError((m) => ({ ...m, [compactUid(payload.card_uid)]: msg }));
-    setBusy(true);
-    setErr("");
+    setSaving(true);
+    setFormError("");
     try {
       await api.addDoorCard({ ...payload, replace });
-      if (source === "dialog") setEditing(null);
-      else setScanPick((m) => ({ ...m, [compactUid(payload.card_uid)]: null }));
+      setEditing(null);
       await refreshAll();
     } catch (e) {
-      setErr(e.message || "Không lưu được thẻ.");
+      setFormError(e.message || "Không lưu được thẻ.");
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   };
 
@@ -362,20 +237,6 @@ export function DoorLockPage() {
     const old = otherCardOf(user.id, payload.card_uid);
     if (old) setConfirmReplace({ payload, user, oldUid: old.card_uid, source });
     else sendLink(payload, source, false);
-  };
-
-  // Khung "Thẻ vừa chạm": thêm thẻ / gắn người
-  const saveScanPerson = (uid, card) => {
-    const person = scanPick[uid];
-    if (!person) {
-      setScanError((m) => ({ ...m, [uid]: "Chọn người dùng thẻ trong danh sách." }));
-      return;
-    }
-    linkCard(
-      { card_uid: card ? card.card_uid : uid, user_id: person.id, card_holder: person.full_name, note: card?.note || "", is_active: card ? card.is_active : 1 },
-      person,
-      "scan"
-    );
   };
 
   // ----- Thẻ -----
@@ -521,7 +382,6 @@ export function DoorLockPage() {
     );
   }
 
-  const inSession = session?.status === "approved";
 
   return (
     <div className="dl-page">
@@ -531,107 +391,21 @@ export function DoorLockPage() {
           <h1 className="dl-title">Khóa cửa lab</h1>
           <p className="dl-subtitle">Quản lý thẻ ra vào và xem ai đã vào lab.</p>
         </div>
-        <button type="button" className="dl-btn" onClick={() => { setLoading(true); loadAll(); loadSession(); }}>
-          <RefreshCw size={16} /> Làm mới
-        </button>
+        <div className="dl-tools">
+          <button type="button" className="dl-btn" onClick={() => { setLoading(true); loadAll(); }}>
+            <RefreshCw size={16} /> Làm mới
+          </button>
+          {/* [1 NÚT] bật/tắt chế độ quản lý thẻ */}
+          <button
+            type="button"
+            className={manage ? "dl-btn" : "dl-btn dl-btn--primary"}
+            aria-pressed={manage}
+            onClick={() => { setManage((m) => !m); setTab("cards"); }}
+          >
+            {manage ? <><Check size={16} /> Xong</> : <><Pencil size={16} /> Quản lý thẻ</>}
+          </button>
+        </div>
       </header>
-
-      <SessionBanner
-        session={session}
-        now={now}
-        busy={sessionBusy}
-        error={sessionError}
-        onAction={sessionAction}
-        savedNotice={savedNotice}
-      />
-
-      {/* Thẻ vừa chạm vào khóa (chỉ khi đang trong chế độ quản lý thẻ) */}
-      {session?.status === "approved" && (
-        <section className="dl-scan" aria-label="Thẻ vừa chạm" aria-live="polite">
-          <div className="dl-scan-head">
-            <h2 className="dl-scan-title">Thẻ vừa chạm</h2>
-            <span className="dl-muted">Chạm thẻ vào khóa để xem hoặc thêm. Cửa không mở trong lúc này.</span>
-          </div>
-          {scans.length === 0 ? (
-            <p className="dl-scan-empty">Chưa có thẻ nào được chạm.</p>
-          ) : (
-            <ul className="dl-list">
-              {scans
-                .filter((s, i, arr) => arr.findIndex((x) => x.card_uid === s.card_uid) === i)
-                .map((s) => {
-                  const card = s.card;
-                  const t = new Date(s.at * 1000);
-                  const needsPerson = !card || !card.user_id;   // chưa có thẻ, hoặc thẻ chưa gắn người
-                  return (
-                    <li key={s.card_uid} className="dl-scan-row">
-                      <span className="dl-log-time dl-num">{pad(t.getHours())}:{pad(t.getMinutes())}</span>
-                      <div className="dl-person-text">
-                        <span className="dl-person-name">
-                          {!card ? "Thẻ chưa có" : needsPerson ? "Chưa gắn người" : card.card_holder}
-                        </span>
-                        <span className="dl-uid dl-num">{prettyUid(s.card_uid)}</span>
-                      </div>
-                      {needsPerson ? (
-                        <form
-                          className="dl-scan-form"
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            saveScanPerson(s.card_uid, card);
-                          }}
-                        >
-                          <PersonPicker
-                            users={users}
-                            cards={cards}
-                            value={scanPick[s.card_uid] || null}
-                            onChange={(u) => setScanPick((m) => ({ ...m, [s.card_uid]: u }))}
-                            currentUid={s.card_uid}
-                            label={`Người dùng thẻ ${prettyUid(s.card_uid)}`}
-                          />
-                          <button type="submit" className="dl-btn dl-btn--primary" disabled={scanBusy === s.card_uid}>
-                            {card ? "Gắn" : <><Plus size={16} /> Thêm</>}
-                          </button>
-                        </form>
-                      ) : (
-                        <div className="dl-scan-actions">
-                          {card.is_active ? (
-                            <span className="dl-badge dl-badge--ok">Đang dùng</span>
-                          ) : (
-                            <span className="dl-badge dl-badge--off">Tạm khóa</span>
-                          )}
-                          <button type="button" className="dl-icon-btn" aria-label={`Đổi tên ${card.card_holder}`} title="Đổi tên" onClick={() => openEdit(card)}>
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            type="button"
-                            className="dl-icon-btn"
-                            aria-label={card.is_active ? "Tạm khóa thẻ" : "Mở lại thẻ"}
-                            title={card.is_active ? "Tạm khóa" : "Mở lại"}
-                            disabled={rowBusy === card.id}
-                            onClick={() => toggleCard(card)}
-                          >
-                            {card.is_active ? <Lock size={16} /> : <Unlock size={16} />}
-                          </button>
-                          <button
-                            type="button"
-                            className="dl-icon-btn dl-icon-btn--danger"
-                            aria-label={`Xóa thẻ ${card.card_holder}`}
-                            title="Xóa"
-                            onClick={() => setConfirmDelete(card)}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      )}
-                      {(scanError[s.card_uid] || (card && rowError[card.id])) && (
-                        <span className="dl-inline-error dl-row-error">{scanError[s.card_uid] || rowError[card.id]}</span>
-                      )}
-                    </li>
-                  );
-                })}
-            </ul>
-          )}
-        </section>
-      )}
 
       {loadError && (
         <div className="dl-alert" role="alert">
@@ -660,7 +434,6 @@ export function DoorLockPage() {
           <span className="dl-stat-hint">{stats.deniedToday > 0 ? "Xem trong Lịch sử ra vào" : "Không có"}</span>
         </div>
       </section>
-
       {/* Tab + công cụ */}
       <div className="dl-toolbar">
         <div className="dl-tabs" role="tablist" aria-label="Nội dung">
@@ -682,7 +455,7 @@ export function DoorLockPage() {
               aria-label="Tìm kiếm"
             />
           </label>
-          {tab === "cards" && (
+          {tab === "cards" && manage && (
             <button type="button" className="dl-btn dl-btn--primary" onClick={openAdd}>
               <Plus size={16} /> Thêm thẻ
             </button>
@@ -693,9 +466,9 @@ export function DoorLockPage() {
       {/* ===== Thẻ ===== */}
       {tab === "cards" && (
         <section className="dl-panel" aria-label="Danh sách thẻ">
-          {!inSession && cards.length > 0 && (
+          {manage && (
             <p className="dl-hint">
-              Thẻ thêm hoặc xóa ở đây được cập nhật xuống khóa ở lần khóa thức dậy tiếp theo (có người quẹt thẻ, bấm nút hoặc đóng cửa). Muốn áp dụng ngay: giữ nút trong cửa 2 giây rồi bấm Đồng ý.
+              Đang quản lý thẻ. Thẻ thêm, đổi người hoặc xóa được cập nhật xuống khóa ở lần khóa thức dậy tiếp theo (có người quẹt thẻ, bấm nút hoặc đóng cửa). Xong bấm “Xong”.
             </p>
           )}
 
@@ -712,7 +485,7 @@ export function DoorLockPage() {
                 <>
                   <h2>Chưa có thẻ nào</h2>
                   <p>Thêm thẻ đầu tiên để người dùng quẹt mở cửa.</p>
-                  <button type="button" className="dl-btn dl-btn--primary" onClick={openAdd}><Plus size={16} /> Thêm thẻ</button>
+                  <button type="button" className="dl-btn dl-btn--primary" onClick={() => { setManage(true); openAdd(); }}><Plus size={16} /> Thêm thẻ</button>
                 </>
               ) : (
                 <>
@@ -737,8 +510,10 @@ export function DoorLockPage() {
                       <span className="dl-avatar" aria-hidden="true">{temp ? "?" : initials(c.card_holder)}</span>
                       <div className="dl-person-text">
                         <span className="dl-person-name">
-                          {temp ? (
+                          {temp && manage ? (
                             <button type="button" className="dl-link" onClick={() => openEdit(c)}>Chưa gắn người – chọn người</button>
+                          ) : temp ? (
+                            <span className="dl-muted">Chưa gắn người</span>
                           ) : (
                             c.card_holder
                           )}
@@ -758,8 +533,8 @@ export function DoorLockPage() {
                       )}
                     </span>
                     <span className="dl-muted dl-num">{added ? added.toLocaleDateString("vi-VN") : "–"}</span>
-                    <div className="dl-row-actions">
-                      <button type="button" className="dl-icon-btn" aria-label={`Đổi tên ${c.card_holder || "thẻ"}`} title="Đổi tên" onClick={() => openEdit(c)}>
+                    <div className="dl-row-actions" hidden={!manage}>
+                      <button type="button" className="dl-icon-btn" aria-label={`Đổi người dùng thẻ ${c.card_holder || ""}`} title="Đổi người" onClick={() => openEdit(c)}>
                         <Pencil size={16} />
                       </button>
                       <button
@@ -842,7 +617,7 @@ export function DoorLockPage() {
                       </span>
                       <span className="dl-log-end">
                         {l.kind === "denied" && l.card_uid && !holderByUid[compactUid(l.card_uid)] && (
-                          <button type="button" className="dl-link dl-log-add" onClick={() => openAdd(l.card_uid)}>
+                          <button type="button" className="dl-link dl-log-add" onClick={() => { setManage(true); openAdd(l.card_uid); }}>
                             <Plus size={14} /> Thêm thẻ này
                           </button>
                         )}
