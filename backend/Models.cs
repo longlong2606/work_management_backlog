@@ -437,6 +437,7 @@ public class CreateDoorCardRequest
     public int? is_active { get; set; } = 1;
     public string? note { get; set; }
     public string? key { get; set; }
+    public bool? replace { get; set; } // [ESP-LOCK] người đã có thẻ: thay thẻ cũ
 }
 
 public class DeleteDoorCardRequest
