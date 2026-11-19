@@ -173,19 +173,8 @@
 }
 .dl-scan-row:last-child { border-bottom: 0; }
 .dl-scan-row:first-child { background: #eff6ff; }
-.dl-scan-form { display: flex; gap: 8px; }
-.dl-scan-form input {
-  width: 220px;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  font: inherit;
-  font-size: 14px;
-  color: var(--text-main);
-  background: var(--bg-card);
-}
-.dl-scan-form input:focus { outline: 2px solid var(--primary-glow); border-color: var(--primary); }
+.dl-scan-form { display: flex; gap: 8px; width: 340px; }
+.dl-scan-form .dl-btn { height: 40px; }
 .dl-scan-actions { display: flex; align-items: center; gap: 4px; }
 .dl-scan-actions .dl-badge { margin-right: 8px; }
 
@@ -466,9 +455,22 @@
 .dl-log-add { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
 
 /* ---------- Hộp thoại ---------- */
+/* Thang z-index cố định của trang: nền mờ 1000, hộp thoại 1001, danh sách thả xuống 1002 */
+.dl-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.45);
+}
 .dl-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1001;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   width: min(440px, calc(100vw - 32px));
-  margin: auto; /* index.css đặt margin:0 cho mọi phần tử → dialog lệch góc */
   padding: 20px;
   border: 0;
   border-radius: var(--radius-lg);
@@ -477,7 +479,74 @@
   box-shadow: var(--shadow-lg);
   font-family: var(--font-family);
 }
-.dl-dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
+.dl-dialog:focus-visible { outline: none; }
+
+/* ---------- Ô chọn người (Base UI Combobox) ---------- */
+.dl-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.dl-picker-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 36px 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-main);
+}
+.dl-picker-input:focus { outline: 2px solid var(--primary-glow); border-color: var(--primary); }
+.dl-picker-trigger {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.dl-picker-trigger:hover { background: var(--bg-page); }
+.dl-picker-positioner { z-index: 1002; outline: 0; }
+.dl-picker-popup {
+  width: var(--anchor-width);
+  min-width: 260px;
+  max-height: min(320px, var(--available-height));
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-family);
+}
+.dl-picker-list { outline: 0; }
+.dl-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  cursor: default;
+  user-select: none;
+}
+.dl-picker-item[data-highlighted] { background: #eff6ff; }
+.dl-picker-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.dl-picker-has { color: #b45309; }
+.dl-picker-check { color: var(--primary); display: flex; }
+.dl-picker-empty:empty { display: none; }
+.dl-picker-empty { padding: 12px 10px; font-size: 13px; color: var(--text-muted); text-wrap: pretty; }
+.dl-avatar--sm { width: 28px; height: 28px; font-size: 11px; }
 .dl-dialog-head {
   display: flex;
   align-items: center;
@@ -536,5 +605,5 @@
   .dl-log { grid-template-columns: 44px 32px minmax(0, 1fr) auto; gap: 10px; }
   .dl-scan-row { grid-template-columns: 44px minmax(0, 1fr); }
   .dl-scan-form, .dl-scan-actions { grid-column: 1 / -1; }
-  .dl-scan-form input { flex: 1; width: auto; min-width: 0; }
+  .dl-scan-form { width: auto; }
 }

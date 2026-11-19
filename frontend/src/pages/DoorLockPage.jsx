@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
   CircleAlert,
   DoorOpen,
   KeyRound,
@@ -18,6 +19,9 @@ import {
   Unlock,
   X,
 } from "lucide-react";
+import { Combobox } from "@base-ui/react/combobox";
+import { Dialog } from "@base-ui/react/dialog";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { api } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import "./DoorLockPage.css";
@@ -61,40 +65,98 @@ function classifyLog(log) {
   return { kind: "denied", label: "Từ chối", who: log.card_holder || "Thẻ lạ" };
 }
 
-// ---------- Hộp thoại (dùng <dialog> gốc: tự giữ focus, Esc để đóng) ----------
-function Modal({ open, onClose, title, children, labelledBy }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const d = ref.current;
-    if (!d) return;
-    if (open && !d.open) {
-      d.showModal();
-      // showModal tự focus nút đầu tiên (nút Đóng); chuyển sang ô/nút được đánh dấu
-      d.querySelector("[data-autofocus]")?.focus();
-    }
-    if (!open && d.open) d.close();
-  }, [open]);
+// ---------- Hộp thoại (Base UI: giữ focus, Esc để đóng; xóa/thay thẻ dùng AlertDialog) ----------
+function Modal({ open, onClose, title, children, alert = false }) {
+  const Comp = alert ? AlertDialog : Dialog;
+  const popupRef = useRef(null);
   return (
-    <dialog
-      ref={ref}
-      className="dl-dialog"
-      aria-labelledby={labelledBy}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-      onClick={(e) => {
-        if (e.target === ref.current) onClose();
-      }}
+    <Comp.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <Comp.Portal>
+        <Comp.Backdrop className="dl-backdrop" />
+        <Comp.Popup
+          ref={popupRef}
+          className="dl-dialog"
+          initialFocus={() => popupRef.current?.querySelector("[data-autofocus]") ?? true}
+        >
+          <div className="dl-dialog-head">
+            <Comp.Title className="dl-dialog-title">{title}</Comp.Title>
+            <Comp.Close className="dl-icon-btn" aria-label="Đóng">
+              <X size={18} />
+            </Comp.Close>
+          </div>
+          {children}
+        </Comp.Popup>
+      </Comp.Portal>
+    </Comp.Root>
+  );
+}
+
+// ---------- Ô chọn người trong Nhân sự (thả xuống + tìm kiếm) ----------
+const fold = (s) =>
+  (s || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase();
+
+function PersonPicker({ users, cards, value, onChange, currentUid = "", autoFocus = false, label = "Người dùng thẻ" }) {
+  // Thẻ đang gắn với từng người (bỏ qua chính thẻ đang sửa)
+  const cardOf = useMemo(() => {
+    const m = {};
+    cards.forEach((c) => {
+      if (c.user_id && compactUid(c.card_uid) !== compactUid(currentUid)) m[c.user_id] = c.card_uid;
+    });
+    return m;
+  }, [cards, currentUid]);
+
+  return (
+    <Combobox.Root
+      items={users}
+      value={value}
+      onValueChange={(u) => onChange(u ?? null)}
+      itemToStringLabel={(u) => u?.full_name || u?.username || ""}
+      isItemEqualToValue={(a, b) => a?.id === b?.id}
+      filter={(u, q) => fold(`${u.full_name} ${u.username} ${u.phone || ""}`).includes(fold(q).trim())}
     >
-      <div className="dl-dialog-head">
-        <h2 id={labelledBy} className="dl-dialog-title">{title}</h2>
-        <button type="button" className="dl-icon-btn" aria-label="Đóng" onClick={onClose}>
-          <X size={18} />
-        </button>
+      <div className="dl-picker">
+        <Combobox.Input
+          className="dl-picker-input"
+          placeholder="Tìm tên, tên đăng nhập, số điện thoại"
+          aria-label={label}
+          data-autofocus={autoFocus ? "" : undefined}
+        />
+        <Combobox.Trigger className="dl-picker-trigger" aria-label="Mở danh sách người">
+          <ChevronDown size={16} />
+        </Combobox.Trigger>
       </div>
-      {open && children}
-    </dialog>
+      <Combobox.Portal>
+        <Combobox.Positioner className="dl-picker-positioner" sideOffset={4}>
+          <Combobox.Popup className="dl-picker-popup">
+            <Combobox.Empty className="dl-picker-empty">
+              Không có ai khớp. Người mới cần được tạo ở trang Nhân sự trước.
+            </Combobox.Empty>
+            <Combobox.List className="dl-picker-list">
+              {(u) => (
+                <Combobox.Item key={u.id} value={u} className="dl-picker-item">
+                  <span className="dl-avatar dl-avatar--sm" aria-hidden="true">{initials(u.full_name || u.username)}</span>
+                  <span className="dl-picker-text">
+                    <span className="dl-person-name">{u.full_name || u.username}</span>
+                    <span className="dl-uid">
+                      @{u.username}
+                      {cardOf[u.id] && <span className="dl-picker-has"> · đã có thẻ {prettyUid(cardOf[u.id])}</span>}
+                    </span>
+                  </span>
+                  <Combobox.ItemIndicator className="dl-picker-check">
+                    <Check size={16} />
+                  </Combobox.ItemIndicator>
+                </Combobox.Item>
+              )}
+            </Combobox.List>
+          </Combobox.Popup>
+        </Combobox.Positioner>
+      </Combobox.Portal>
+    </Combobox.Root>
   );
 }
 
@@ -182,24 +244,29 @@ export function DoorLockPage() {
   const [now, setNow] = useState(() => Date.now());
   const [scans, setScans] = useState([]); // thẻ vừa chạm vào khóa trong phiên (mới nhất trước)
   const hasSession = !!session;
-  const [scanNames, setScanNames] = useState({}); // tên đang gõ cho từng thẻ vừa chạm
+  const [scanPick, setScanPick] = useState({}); // người đang chọn cho từng thẻ vừa chạm
   const [scanBusy, setScanBusy] = useState(null);
   const [scanError, setScanError] = useState({});
 
+  // Nhân sự: thẻ chỉ được gắn cho người có trong danh sách này (1 người 1 thẻ)
+  const [users, setUsers] = useState([]);
+
   // Hộp thoại
   const [editing, setEditing] = useState(null); // null | {mode:'add'|'edit', card?}
-  const [form, setForm] = useState({ uid: "", name: "", note: "" });
+  const [form, setForm] = useState({ uid: "", user: null, note: "" });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmReplace, setConfirmReplace] = useState(null); // {payload, user, oldUid, source}
   const [rowBusy, setRowBusy] = useState(null);
   const [rowError, setRowError] = useState({});
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, l] = await Promise.all([api.getDoorCards(), api.getDoorLogs(300)]);
+      const [c, l, u] = await Promise.all([api.getDoorCards(), api.getDoorLogs(300), api.getUsers()]);
       setCards(c.cards || []);
       setLogs(l.logs || []);
+      setUsers((Array.isArray(u) ? u : []).slice().sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "vi")));
       setLoadError("");
     } catch (e) {
       setLoadError(e.message || "Không tải được dữ liệu khóa cửa.");
@@ -268,76 +335,88 @@ export function DoorLockPage() {
 
   const refreshAll = () => Promise.all([loadAll(), loadSession()]);
 
-  // Thêm / đặt tên thẻ ngay từ khung "Thẻ vừa chạm"
-  const saveScanName = async (uid, card) => {
-    const name = (scanNames[uid] || "").trim();
-    if (!name) {
-      setScanError((m) => ({ ...m, [uid]: "Nhập tên người dùng thẻ." }));
-      return;
-    }
-    setScanBusy(uid);
-    setScanError((m) => ({ ...m, [uid]: "" }));
+  // ----- Gắn thẻ với người (dùng chung cho hộp thoại và khung "Thẻ vừa chạm") -----
+  // Người đã có thẻ khác → hỏi "Thay thẻ cũ?" trước (server cũng chặn nếu không có replace).
+  const otherCardOf = (userId, uid) =>
+    cards.find((c) => c.user_id === userId && compactUid(c.card_uid) !== compactUid(uid));
+
+  const sendLink = async (payload, source, replace) => {
+    const setBusy = source === "dialog" ? setSaving : (v) => setScanBusy(v ? payload.card_uid : null);
+    const setErr = (msg) =>
+      source === "dialog" ? setFormError(msg) : setScanError((m) => ({ ...m, [compactUid(payload.card_uid)]: msg }));
+    setBusy(true);
+    setErr("");
     try {
-      await api.addDoorCard({
-        card_uid: card ? card.card_uid : uid,
-        card_holder: name,
-        note: card?.note || "",
-        is_active: card ? card.is_active : 1,
-      });
-      setScanNames((m) => ({ ...m, [uid]: "" }));
+      await api.addDoorCard({ ...payload, replace });
+      if (source === "dialog") setEditing(null);
+      else setScanPick((m) => ({ ...m, [compactUid(payload.card_uid)]: null }));
       await refreshAll();
     } catch (e) {
-      setScanError((m) => ({ ...m, [uid]: e.message || "Không lưu được thẻ." }));
+      setErr(e.message || "Không lưu được thẻ.");
     } finally {
-      setScanBusy(null);
+      setBusy(false);
     }
+  };
+
+  const linkCard = (payload, user, source) => {
+    const old = otherCardOf(user.id, payload.card_uid);
+    if (old) setConfirmReplace({ payload, user, oldUid: old.card_uid, source });
+    else sendLink(payload, source, false);
+  };
+
+  // Khung "Thẻ vừa chạm": thêm thẻ / gắn người
+  const saveScanPerson = (uid, card) => {
+    const person = scanPick[uid];
+    if (!person) {
+      setScanError((m) => ({ ...m, [uid]: "Chọn người dùng thẻ trong danh sách." }));
+      return;
+    }
+    linkCard(
+      { card_uid: card ? card.card_uid : uid, user_id: person.id, card_holder: person.full_name, note: card?.note || "", is_active: card ? card.is_active : 1 },
+      person,
+      "scan"
+    );
   };
 
   // ----- Thẻ -----
   const openAdd = (uid = "") => {
-    setForm({ uid: typeof uid === "string" ? prettyUid(uid) : "", name: "", note: "" });
+    setForm({ uid: typeof uid === "string" ? prettyUid(uid) : "", user: null, note: "" });
     setFormError("");
     setEditing({ mode: "add" });
   };
   const openEdit = (card) => {
-    setForm({ uid: card.card_uid, name: isTempName(card.card_holder) ? "" : card.card_holder || "", note: card.note || "" });
+    setForm({ uid: card.card_uid, user: users.find((u) => u.id === card.user_id) || null, note: card.note || "" });
     setFormError("");
     setEditing({ mode: "edit", card });
   };
 
-  const submitCard = async (e) => {
+  const submitCard = (e) => {
     e.preventDefault();
     const uid = compactUid(form.uid);
-    const name = form.name.trim();
     if (!/^([0-9A-F]{2}){4,10}$/.test(uid)) {
       setFormError("Mã thẻ gồm 8–20 ký tự 0–9, A–F. Ví dụ: 29 02 05 B3");
       return;
     }
-    if (!name) {
-      setFormError("Nhập tên người dùng thẻ.");
+    if (!form.user) {
+      setFormError("Chọn người dùng thẻ trong danh sách Nhân sự.");
       return;
     }
     if (editing.mode === "add" && cards.some((c) => compactUid(c.card_uid) === uid)) {
       setFormError("Thẻ này đã có trong danh sách.");
       return;
     }
-    setSaving(true);
-    setFormError("");
-    try {
-      await api.addDoorCard({
+    linkCard(
+      {
         card_uid: editing.mode === "edit" ? editing.card.card_uid : uid,
-        card_holder: name,
+        user_id: form.user.id,
+        card_holder: form.user.full_name,
         note: form.note.trim(),
-        // Đổi tên không được làm thẻ đang tạm khóa tự mở lại
+        // Đổi người không được làm thẻ đang tạm khóa tự mở lại
         is_active: editing.mode === "edit" ? editing.card.is_active : 1,
-      });
-      setEditing(null);
-      refreshAll();
-    } catch (err) {
-      setFormError(err.message || "Không lưu được thẻ.");
-    } finally {
-      setSaving(false);
-    }
+      },
+      form.user,
+      "dialog"
+    );
   };
 
   const toggleCard = async (card) => {
@@ -482,33 +561,34 @@ export function DoorLockPage() {
                 .map((s) => {
                   const card = s.card;
                   const t = new Date(s.at * 1000);
-                  const needsName = !card || isTempName(card.card_holder);
+                  const needsPerson = !card || !card.user_id;   // chưa có thẻ, hoặc thẻ chưa gắn người
                   return (
                     <li key={s.card_uid} className="dl-scan-row">
                       <span className="dl-log-time dl-num">{pad(t.getHours())}:{pad(t.getMinutes())}</span>
                       <div className="dl-person-text">
                         <span className="dl-person-name">
-                          {!card ? "Thẻ chưa có" : needsName ? "Thẻ chưa đặt tên" : card.card_holder}
+                          {!card ? "Thẻ chưa có" : needsPerson ? "Chưa gắn người" : card.card_holder}
                         </span>
                         <span className="dl-uid dl-num">{prettyUid(s.card_uid)}</span>
                       </div>
-                      {needsName ? (
+                      {needsPerson ? (
                         <form
                           className="dl-scan-form"
                           onSubmit={(e) => {
                             e.preventDefault();
-                            saveScanName(s.card_uid, card);
+                            saveScanPerson(s.card_uid, card);
                           }}
                         >
-                          <input
-                            value={scanNames[s.card_uid] || ""}
-                            onChange={(e) => setScanNames((m) => ({ ...m, [s.card_uid]: e.target.value }))}
-                            placeholder="Tên người dùng"
-                            aria-label={`Tên người dùng thẻ ${prettyUid(s.card_uid)}`}
-                            autoComplete="off"
+                          <PersonPicker
+                            users={users}
+                            cards={cards}
+                            value={scanPick[s.card_uid] || null}
+                            onChange={(u) => setScanPick((m) => ({ ...m, [s.card_uid]: u }))}
+                            currentUid={s.card_uid}
+                            label={`Người dùng thẻ ${prettyUid(s.card_uid)}`}
                           />
                           <button type="submit" className="dl-btn dl-btn--primary" disabled={scanBusy === s.card_uid}>
-                            {card ? "Lưu tên" : <><Plus size={16} /> Thêm</>}
+                            {card ? "Gắn" : <><Plus size={16} /> Thêm</>}
                           </button>
                         </form>
                       ) : (
@@ -648,7 +728,8 @@ export function DoorLockPage() {
                 <span>Người dùng</span><span>Trạng thái</span><span>Ngày thêm</span><span />
               </li>
               {visibleCards.map((c) => {
-                const temp = isTempName(c.card_holder);
+                const temp = !c.user_id;   // thẻ chưa gắn người trong Nhân sự
+                const oldName = temp && !isTempName(c.card_holder) ? c.card_holder : "";   // tên gõ tay trước đây
                 const added = parseLocal(c.created_at);
                 return (
                   <li key={c.id} className={`dl-row ${c.is_active ? "" : "dl-row--off"}`}>
@@ -657,12 +738,16 @@ export function DoorLockPage() {
                       <div className="dl-person-text">
                         <span className="dl-person-name">
                           {temp ? (
-                            <button type="button" className="dl-link" onClick={() => openEdit(c)}>Thẻ mới – đặt tên</button>
+                            <button type="button" className="dl-link" onClick={() => openEdit(c)}>Chưa gắn người – chọn người</button>
                           ) : (
                             c.card_holder
                           )}
                         </span>
-                        <span className="dl-uid dl-num">{prettyUid(c.card_uid)}{c.note ? ` · ${c.note}` : ""}</span>
+                        <span className="dl-uid dl-num">
+                          {prettyUid(c.card_uid)}
+                          {oldName ? ` · tên cũ: ${oldName}` : ""}
+                          {c.note ? ` · ${c.note}` : ""}
+                        </span>
                       </div>
                     </div>
                     <span>
@@ -774,12 +859,11 @@ export function DoorLockPage() {
         </section>
       )}
 
-      {/* Thêm / đổi tên thẻ */}
+      {/* Thêm thẻ / đổi người dùng thẻ */}
       <Modal
         open={!!editing}
         onClose={() => !saving && setEditing(null)}
-        title={editing?.mode === "edit" ? "Đổi thông tin thẻ" : "Thêm thẻ"}
-        labelledBy="dl-card-dialog"
+        title={editing?.mode === "edit" ? "Đổi người dùng thẻ" : "Thêm thẻ"}
       >
         <form className="dl-form" onSubmit={submitCard} noValidate>
           <label className="dl-field">
@@ -794,18 +878,20 @@ export function DoorLockPage() {
               className="dl-num"
               data-autofocus={editing?.mode === "add" && !form.uid ? "" : undefined}
             />
-            {editing?.mode === "add" && <small>Mã in trên thẻ, hoặc lấy từ dòng “Thẻ lạ” trong Lịch sử ra vào.</small>}
+            {editing?.mode === "add" && <small>Mã in trên thẻ, hoặc chạm thẻ vào khóa trong chế độ quản lý thẻ.</small>}
           </label>
-          <label className="dl-field">
-            <span>Tên người dùng</span>
-            <input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="VD: Nguyễn Văn A"
-              autoComplete="off"
-              data-autofocus={editing?.mode === "edit" || form.uid ? "" : undefined}
+          <div className="dl-field">
+            <span>Người dùng thẻ</span>
+            <PersonPicker
+              users={users}
+              cards={cards}
+              value={form.user}
+              onChange={(u) => setForm((f) => ({ ...f, user: u }))}
+              currentUid={form.uid}
+              autoFocus={editing?.mode === "edit" || !!form.uid}
             />
-          </label>
+            <small>Chỉ chọn được người có trong Nhân sự. Mỗi người 1 thẻ.</small>
+          </div>
           <label className="dl-field">
             <span>Ghi chú <em>(không bắt buộc)</em></span>
             <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="VD: Sinh viên K67" autoComplete="off" />
@@ -820,11 +906,34 @@ export function DoorLockPage() {
         </form>
       </Modal>
 
+      {/* Người đã có thẻ: hỏi thay thẻ cũ */}
+      <Modal alert open={!!confirmReplace} onClose={() => setConfirmReplace(null)} title="Thay thẻ cũ?">
+        <p className="dl-dialog-body">
+          <strong>{confirmReplace?.user.full_name}</strong> đang có thẻ{" "}
+          <strong className="dl-num">{prettyUid(confirmReplace?.oldUid)}</strong>. Mỗi người chỉ được 1 thẻ: thẻ cũ sẽ bị xóa
+          và không mở được cửa nữa, thẻ <strong className="dl-num">{prettyUid(confirmReplace?.payload.card_uid)}</strong> được gắn thay.
+        </p>
+        <div className="dl-form-actions">
+          <button type="button" className="dl-btn" data-autofocus="" onClick={() => setConfirmReplace(null)}>Hủy</button>
+          <button
+            type="button"
+            className="dl-btn dl-btn--danger"
+            onClick={() => {
+              const r = confirmReplace;
+              setConfirmReplace(null);
+              sendLink(r.payload, r.source, true);
+            }}
+          >
+            Thay thẻ cũ
+          </button>
+        </div>
+      </Modal>
+
       {/* Xác nhận xóa */}
-      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Xóa thẻ?" labelledBy="dl-delete-dialog">
+      <Modal alert open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Xóa thẻ?">
         <p className="dl-dialog-body">
           Thẻ <strong className="dl-num">{prettyUid(confirmDelete?.card_uid)}</strong> của{" "}
-          <strong>{isTempName(confirmDelete?.card_holder) ? "người chưa đặt tên" : confirmDelete?.card_holder}</strong> sẽ không mở được cửa nữa.
+          <strong>{!confirmDelete?.user_id ? "người chưa gắn" : confirmDelete?.card_holder}</strong> sẽ không mở được cửa nữa.
           Lịch sử ra vào cũ vẫn được giữ.
         </p>
         <p className="dl-dialog-note">Chỉ muốn chặn tạm thời? Dùng nút khóa thay vì xóa.</p>
