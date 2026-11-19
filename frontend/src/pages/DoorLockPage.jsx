@@ -185,7 +185,7 @@ function SessionBanner({ session, now, busy, error, onAction, savedNotice }) {
         <div className="dl-session-text">
           <strong>Khóa cửa xin vào chế độ quản lý thẻ</strong>
           <span>
-            Có người vừa giữ nút trong cửa 3 giây. Đồng ý để thêm, xóa thẻ và cập nhật ngay xuống khóa.
+            Có người vừa giữ nút trong cửa 2 giây. Đồng ý để thêm, xóa thẻ và cập nhật ngay xuống khóa.
             <span className="dl-num"> Còn {left} giây.</span>
           </span>
           {error && <span className="dl-inline-error">{error}</span>}
@@ -695,7 +695,7 @@ export function DoorLockPage() {
         <section className="dl-panel" aria-label="Danh sách thẻ">
           {!inSession && cards.length > 0 && (
             <p className="dl-hint">
-              Thẻ thêm hoặc xóa ở đây sẽ áp dụng ở lần khóa cập nhật tiếp theo. Muốn áp dụng ngay: giữ nút trong cửa 3 giây rồi bấm Đồng ý.
+              Thẻ thêm hoặc xóa ở đây được cập nhật xuống khóa ở lần khóa thức dậy tiếp theo (có người quẹt thẻ, bấm nút hoặc đóng cửa). Muốn áp dụng ngay: giữ nút trong cửa 2 giây rồi bấm Đồng ý.
             </p>
           )}
 
