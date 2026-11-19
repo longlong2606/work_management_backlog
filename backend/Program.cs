@@ -4830,6 +4830,10 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
     try
     {
         using var conn = Database.GetConnection();
+        // [ESP-LOCK] PostgreSQL cần kiểu DateTime: lấy đúng localNow (giờ quẹt thật khóa gửi), không lấy giờ server
+        object caVal = Database.IsPostgres
+            ? DateTime.SpecifyKind(DateTime.ParseExact(localNow, "yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Unspecified)
+            : localNow;
         // [ESP-LOCK] Khóa gửi lại khi chưa nhận 2xx → bỏ trùng theo (card_uid, timestamp)
         bool duplicate = !string.IsNullOrEmpty(timestamp) && conn.ExecuteScalar<long>(
             "SELECT COUNT(*) FROM door_access_logs WHERE card_uid = @c AND device_timestamp = @t",
@@ -4849,7 +4853,7 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
                 a = action,
                 msg = statusMessage,
                 ip = clientIp,
-                ca = localNow
+                ca = caVal
             });
     }
     catch { }
@@ -4988,7 +4992,8 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
     }
 
     card_uid = card_uid.Trim().ToUpper();
-    var nowStr = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    var nowDt = DateTime.SpecifyKind(DateTime.UtcNow.AddHours(7), DateTimeKind.Unspecified);
+    object nowVal = Database.IsPostgres ? nowDt : nowDt.ToString("yyyy-MM-dd HH:mm:ss");
 
     using var conn = Database.GetConnection();
     var existing = conn.QueryFirstOrDefault<DoorCardDto>(
@@ -5042,7 +5047,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 uidVal = user_id ?? existing.user_id,
                 active = is_active ?? existing.is_active,
                 note = note ?? existing.note,
-                now = nowStr,
+                now = nowVal,
                 id = existing.id
             });
 
@@ -5068,7 +5073,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 uidVal = user_id,
                 active = is_active ?? 1,
                 note = note ?? "",
-                now = nowStr
+                now = nowVal
             });
 
         TouchDoorCards(); // [ESP-LOCK]
@@ -5242,13 +5247,14 @@ async Task<IResult> HandleToggleCard(HttpContext ctx, string? routeUid = null)
     }
 
     int newStatus = target.is_active == 1 ? 0 : 1;
-    var nowStr = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    var nowDt = DateTime.SpecifyKind(DateTime.UtcNow.AddHours(7), DateTimeKind.Unspecified);
+    object nowVal = Database.IsPostgres ? nowDt : nowDt.ToString("yyyy-MM-dd HH:mm:ss");
     conn.Execute("UPDATE door_cards SET is_active = @act, updated_at = @now WHERE id = @id",
-        new { act = newStatus, now = nowStr, id = target.id });
+        new { act = newStatus, now = nowVal, id = target.id });
     TouchDoorCards(); // [ESP-LOCK]
 
     target.is_active = newStatus;
-    target.updated_at = nowStr;
+    target.updated_at = nowDt.ToString("yyyy-MM-dd HH:mm:ss");
 
     return Results.Ok(new
     {
@@ -5538,6 +5544,9 @@ app.MapPost("/api/door/unlock-remote", (HttpContext ctx) =>
     var key = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'") ?? DEFAULT_DOOR_SECRET_KEY;
 
     var localNowUnlock = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    object caValUnlock = Database.IsPostgres 
+        ? DateTime.SpecifyKind(DateTime.UtcNow.AddHours(7), DateTimeKind.Unspecified) 
+        : localNowUnlock;
     conn.Execute(@"
         INSERT INTO door_access_logs (key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at)
         VALUES (@k, 'WEB_REMOTE_ADMIN', 'ADMIN_REMOTE', @cholder, @t, 'granted', 'unlock', @msg, @ip, @ca)",
@@ -5548,7 +5557,7 @@ app.MapPost("/api/door/unlock-remote", (HttpContext ctx) =>
             t = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
             msg = $"Mở khóa từ xa bởi người dùng: {currentUser.full_name} (@{currentUser.username})",
             ip = clientIp,
-            ca = localNowUnlock
+            ca = caValUnlock
         });
 
     return Results.Ok(new

@@ -38,10 +38,12 @@ if not exist "%FRONTEND_DIR%" (
 )
 
 echo [3/4] Dang khoi chay Backend API (.NET 10 tren cong 8000)...
+set DB_TYPE=postgres
+set POSTGRES_CONNECTION_STRING=Host=localhost;Port=5432;Database=work_management;Username=postgres;Password=postgres_secret_2026
 if exist "%BACKEND_DIR%\bin\Debug\net10.0\backend.exe" (
-    start "1. Backend API (:8000)" cmd /k "cd /d %BACKEND_DIR% && bin\Debug\net10.0\backend.exe"
+    start "1. Backend API (:8000)" cmd /k "cd /d %BACKEND_DIR% && set DB_TYPE=postgres && set POSTGRES_CONNECTION_STRING=Host=localhost;Port=5432;Database=work_management;Username=postgres;Password=postgres_secret_2026 && bin\Debug\net10.0\backend.exe"
 ) else (
-    start "1. Backend API (:8000)" cmd /k "cd /d %BACKEND_DIR% && dotnet run --no-restore"
+    start "1. Backend API (:8000)" cmd /k "cd /d %BACKEND_DIR% && set DB_TYPE=postgres && set POSTGRES_CONNECTION_STRING=Host=localhost;Port=5432;Database=work_management;Username=postgres;Password=postgres_secret_2026 && dotnet run --no-restore"
 )
 ping -n 4 127.0.0.1 >nul
 
