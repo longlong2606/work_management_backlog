@@ -544,6 +544,12 @@ export const api = {
     request(`/cards/${encodeURIComponent(cardUid)}/toggle`, {
       method: "POST",
     }),
+  // [ESP-LOCK] Phiên quản lý thẻ (giữ nút trong cửa 3 giây)
+  getDoorSession: () => request(`/door/session?_t=${Date.now()}`),
+  doorSessionAction: (id, op) =>
+    request(`/door/session/${encodeURIComponent(id)}/${op}`, {
+      method: "POST",
+    }),
   testDoorAccess: (key, macid, timestamp, card_uid = "") =>
     request(`/?key=${encodeURIComponent(key)}&macid=${encodeURIComponent(macid)}&timestamp=${encodeURIComponent(timestamp)}${card_uid ? `&card_uid=${encodeURIComponent(card_uid)}` : ""}`),
 };
