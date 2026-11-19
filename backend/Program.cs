@@ -4689,6 +4689,14 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
         return await HandleDeleteCard(ctx, null);
     }
 
+    // [ESP-LOCK] Danh sách mã thẻ cho khóa + phiên quản lý thẻ
+    if (string.Equals(actionParam, "list", StringComparison.OrdinalIgnoreCase))
+        return HandleEspCardList(ctx, key);
+    if (string.Equals(actionParam, "session_request", StringComparison.OrdinalIgnoreCase))
+        return HandleEspSessionRequest(ctx, key, macid);
+    if (string.Equals(actionParam, "session_status", StringComparison.OrdinalIgnoreCase))
+        return HandleEspSessionStatus(ctx, key);
+
     var localNow = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
     var serverTime = localNow;
     var clientIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -4736,7 +4744,16 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
     string? cardHolder = null;
     DoorCardDto? cardInfo = null;
 
-    if (!string.IsNullOrWhiteSpace(card_uid))
+    // [ESP-LOCK] card_uid=EXIT: mở từ bên trong bằng nút thoát hiểm (không biết là ai)
+    if (string.Equals(card_uid?.Trim(), "EXIT", StringComparison.OrdinalIgnoreCase))
+    {
+        card_uid = "EXIT";
+        isGranted = isKeyValid;
+        action = isKeyValid ? "exit" : "none";
+        cardHolder = "Nút thoát hiểm";
+        statusMessage = isKeyValid ? "Mở cửa từ bên trong (nút thoát hiểm)" : "Mã bảo mật khóa (key) không đúng hoặc không hợp lệ";
+    }
+    else if (!string.IsNullOrWhiteSpace(card_uid))
     {
         card_uid = card_uid.Trim().ToUpper();
         try
@@ -4788,10 +4805,21 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
         }
     }
 
+    // [ESP-LOCK] Giờ ghi nhật ký = giờ quẹt thật do khóa gửi (unix giây UTC), nếu hợp lệ.
+    // Khóa gửi muộn (ngủ, mất mạng) nên không dùng giờ server. Giờ lạ (trước 2024 / tương lai > 5 phút) → dùng giờ server.
+    long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    if (long.TryParse(timestamp, out var devTs) && devTs > 1704067200 && devTs < nowUnix + 300)
+        localNow = DateTimeOffset.FromUnixTimeSeconds(devTs).UtcDateTime.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+
     // Ghi nhật ký lịch sử mở cửa vào database (dùng giờ Việt Nam UTC+7)
     try
     {
         using var conn = Database.GetConnection();
+        // [ESP-LOCK] Khóa gửi lại khi chưa nhận 2xx → bỏ trùng theo (card_uid, timestamp)
+        bool duplicate = !string.IsNullOrEmpty(timestamp) && conn.ExecuteScalar<long>(
+            "SELECT COUNT(*) FROM door_access_logs WHERE card_uid = @c AND device_timestamp = @t",
+            new { c = card_uid ?? "", t = timestamp }) > 0;
+        if (!duplicate)
         conn.Execute(@"
             INSERT INTO door_access_logs (key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at)
             VALUES (@k, @m, @cuid, @cholder, @t, @s, @a, @msg, @ip, @ca)",
@@ -4970,6 +4998,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 id = existing.id
             });
 
+        TouchDoorCards(); // [ESP-LOCK]
         var updated = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE id = @id", new { id = existing.id });
         return Results.Ok(new
         {
@@ -4994,6 +5023,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 now = nowStr
             });
 
+        TouchDoorCards(); // [ESP-LOCK]
         var created = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE UPPER(card_uid) = @uid", new { uid = card_uid });
         return Results.Json(new
         {
@@ -5069,6 +5099,7 @@ async Task<IResult> HandleDeleteCard(HttpContext ctx, string? routeUid = null)
     }
 
     conn.Execute("DELETE FROM door_cards WHERE id = @id", new { id = target.id });
+    TouchDoorCards(); // [ESP-LOCK]
 
     return Results.Ok(new
     {
@@ -5165,6 +5196,7 @@ async Task<IResult> HandleToggleCard(HttpContext ctx, string? routeUid = null)
     var nowStr = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
     conn.Execute("UPDATE door_cards SET is_active = @act, updated_at = @now WHERE id = @id",
         new { act = newStatus, now = nowStr, id = target.id });
+    TouchDoorCards(); // [ESP-LOCK]
 
     target.is_active = newStatus;
     target.updated_at = nowStr;
@@ -5176,6 +5208,155 @@ async Task<IResult> HandleToggleCard(HttpContext ctx, string? routeUid = null)
         card = target
     });
 }
+
+// =========================================================================
+// [ESP-LOCK] API cho khóa cửa ESP8266: danh sách thẻ + phiên quản lý thẻ
+// =========================================================================
+
+// Mốc thay đổi danh sách thẻ (unix giây). Khóa so mốc này để biết có cần cập nhật bộ nhớ không.
+void TouchDoorCards()
+{
+    try
+    {
+        using var conn = Database.GetConnection();
+        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_cards_updated', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            new { v = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString() });
+    }
+    catch { }
+}
+
+long GetDoorCardsUpdated()
+{
+    try
+    {
+        using var conn = Database.GetConnection();
+        var v = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_cards_updated'");
+        if (long.TryParse(v, out var ts)) return ts;
+    }
+    catch { }
+    TouchDoorCards(); // chưa có mốc → tạo mốc ngay
+    return DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+}
+
+IResult EspUnauthorized() =>
+    Results.Json(new { success = false, message = "Sai key" }, statusCode: 401);
+
+// GET /api/?key=...&action=list → {"updated":1795003400,"cards":["290205B3",...]}
+// Chỉ trả thẻ đang hoạt động (is_active=1), mã chữ hoa liền (bỏ khoảng trắng, '-', ':').
+IResult HandleEspCardList(HttpContext ctx, string? key)
+{
+    if (!IsDoorManagerAuthorized(ctx, key)) return EspUnauthorized();
+    using var conn = Database.GetConnection();
+    var cards = conn.Query<string>("SELECT card_uid FROM door_cards WHERE is_active = 1 ORDER BY id")
+        .Select(u => new string((u ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpper())
+        .Where(u => u.Length > 0)
+        .Distinct()
+        .ToList();
+    return Results.Ok(new { updated = GetDoorCardsUpdated(), cards });
+}
+
+// GET /api/?key=...&action=session_request&macid=... → {"session":"a1b2c3","status":"pending"}
+IResult HandleEspSessionRequest(HttpContext ctx, string? key, string? macid)
+{
+    if (!IsDoorManagerAuthorized(ctx, key)) return EspUnauthorized();
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var mac = string.IsNullOrWhiteSpace(macid) ? "N/A" : macid.Trim();
+    DoorSession s;
+    lock (DoorSessionStore.Sync)
+    {
+        DoorSessionStore.Cleanup(now);
+        // Mỗi khóa chỉ 1 phiên đang mở: phiên cũ (nếu còn) chuyển expired
+        foreach (var old in DoorSessionStore.Sessions.Values.Where(x => x.macid == mac && (x.status == "pending" || x.status == "approved")))
+            old.status = "expired";
+        s = new DoorSession
+        {
+            id = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(3)).ToLower(),
+            macid = mac,
+            status = "pending",
+            created_at = now,
+            last_seen = now
+        };
+        DoorSessionStore.Sessions[s.id] = s;
+    }
+    return Results.Ok(new { session = s.id, status = s.status });
+}
+
+// GET /api/?key=...&action=session_status&session=a1b2c3 → {"status":"approved"}
+IResult HandleEspSessionStatus(HttpContext ctx, string? key)
+{
+    if (!IsDoorManagerAuthorized(ctx, key)) return EspUnauthorized();
+    var sid = (ctx.Request.Query["session"].FirstOrDefault() ?? "").Trim().ToLower();
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (DoorSessionStore.Sync)
+    {
+        if (!DoorSessionStore.Sessions.TryGetValue(sid, out var s))
+            return Results.Json(new { status = "expired", message = "Không có phiên này" }, statusCode: 404);
+        DoorSessionStore.Expire(s, now);
+        if (s.status == "pending" || s.status == "approved") s.last_seen = now;
+        return Results.Ok(new { status = s.status });
+    }
+}
+
+// --- Phía web (admin/leader đăng nhập) ---
+object DoorSessionView(DoorSession s, long now)
+{
+    long left = s.status == "pending" ? DoorSessionStore.PENDING_TIMEOUT - (now - s.created_at)
+              : s.status == "approved" ? DoorSessionStore.APPROVED_TIMEOUT - (now - (s.approved_at ?? s.created_at))
+              : 0;
+    return new
+    {
+        s.id, s.macid, s.status, s.created_at, s.approved_at, s.last_seen, s.decided_by,
+        seconds_left = Math.Max(0, left),
+        lock_online = now - s.last_seen <= 10   // khóa vừa hỏi trong 10 giây
+    };
+}
+
+// GET /api/door/session → phiên đang mở (pending/approved) mới nhất, hoặc null. Web hỏi mỗi 2–3 giây để hiện thông báo.
+app.MapGet("/api/door/session", (HttpContext ctx) =>
+{
+    var u = AuthService.GetCurrentUser(ctx);
+    if (u == null || (u.role != "admin" && u.role != "leader")) return Results.StatusCode(403);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (DoorSessionStore.Sync)
+    {
+        foreach (var x in DoorSessionStore.Sessions.Values) DoorSessionStore.Expire(x, now);
+        var s = DoorSessionStore.Sessions.Values
+            .Where(x => x.status == "pending" || x.status == "approved")
+            .OrderByDescending(x => x.created_at)
+            .FirstOrDefault();
+        return Results.Ok(new { success = true, session = s == null ? null : DoorSessionView(s, now) });
+    }
+});
+
+// POST /api/door/session/{id}/approve | deny | save
+app.MapPost("/api/door/session/{id}/{op}", (string id, string op, HttpContext ctx) =>
+{
+    var u = AuthService.GetCurrentUser(ctx);
+    if (u == null || (u.role != "admin" && u.role != "leader")) return Results.StatusCode(403);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (DoorSessionStore.Sync)
+    {
+        if (!DoorSessionStore.Sessions.TryGetValue(id.Trim().ToLower(), out var s))
+            return Results.Json(new { success = false, message = "Không tìm thấy phiên" }, statusCode: 404);
+        DoorSessionStore.Expire(s, now);
+
+        string? next = op.ToLower() switch
+        {
+            "approve" when s.status == "pending" => "approved",
+            "deny" when s.status == "pending" => "denied",
+            "save" when s.status == "approved" => "saved",
+            _ => null
+        };
+        if (next == null)
+            return Results.Json(new { success = false, message = $"Không thể '{op}' khi phiên đang ở trạng thái '{s.status}'", session = DoorSessionView(s, now) }, statusCode: 409);
+
+        s.status = next;
+        if (next == "approved") s.approved_at = now;
+        s.decided_by = u.full_name ?? u.username;
+        return Results.Ok(new { success = true, session = DoorSessionView(s, now) });
+    }
+});
+// [ESP-LOCK] hết
 
 // Đăng ký endpoint theo đúng định dạng người dùng yêu cầu: /api/?key=...&macid=...&timestamp=...&card_uid=...
 app.MapGet("/api", HandleDoorLockRequest);
