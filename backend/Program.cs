@@ -1342,7 +1342,7 @@ app.MapGet("/api/tv/today", (string? date) =>
 
     var regQuery = @"
         SELECT sr.id, sr.user_id, sr.shift_id, sr.work_date, sr.status, sr.note,
-               COALESCE(sr.attendance_status, 'present') as attendance_status,
+               COALESCE(sr.attendance_status, 'not_checked_in') as attendance_status,
                sr.actual_hours, sr.time_note,
                sr.absence_reason,
                u.full_name, u.username, u.email, u.phone,
@@ -2044,7 +2044,7 @@ int SyncClassScheduleKpiDeductions(System.Data.Common.DbConnection conn, long? t
             {
                 conn.Execute(@"
                     UPDATE shift_registrations
-                    SET attendance_status = 'present',
+                    SET attendance_status = 'not_checked_in',
                         absence_reason = NULL,
                         time_note = NULL,
                         actual_hours = NULL,
@@ -2105,7 +2105,7 @@ void EnsureWeeklySchedule(System.Data.Common.DbConnection conn, string startDate
                     {
                         conn.Execute(@"
                             INSERT INTO shift_registrations (user_id, shift_id, work_date, status, note, attendance_status)
-                            VALUES (@uid, @sid, @wdate, 'registered', 'Lịch trực định kỳ', 'present')
+                            VALUES (@uid, @sid, @wdate, 'registered', 'Lịch trực định kỳ', 'not_checked_in')
                             ON CONFLICT (user_id, shift_id, work_date) DO NOTHING",
                             new { uid, sid, wdate = targetWorkDate },
                             transaction: tx
@@ -2133,7 +2133,7 @@ app.MapGet("/api/shifts/schedule", (string start_date, string end_date, HttpCont
     var query = @"
         SELECT sr.id, sr.user_id, sr.shift_id, sr.work_date, sr.status, sr.note,
                sr.target_shift_id, sr.target_work_date, sr.request_reason,
-               COALESCE(sr.attendance_status, 'present') as attendance_status,
+               COALESCE(sr.attendance_status, 'not_checked_in') as attendance_status,
                sr.actual_hours, sr.time_note,
                sr.absence_reason, sr.absence_reported_at, sr.absence_approved_by, sr.absence_approved_at,
                u.full_name, u.username, u.email, u.phone,
@@ -2175,7 +2175,7 @@ app.MapGet("/api/shifts/roster", (int shift_id, string work_date, HttpContext ct
             u.role,
             u.department,
             sr.id as registration_id,
-            COALESCE(sr.attendance_status, 'present') as attendance_status,
+            COALESCE(sr.attendance_status, 'not_checked_in') as attendance_status,
             sr.actual_hours,
             sr.time_note,
             sr.absence_reason,
@@ -2951,13 +2951,25 @@ app.MapPost("/api/shifts/attendance/toggle", (ToggleAttendanceRequest req, HttpC
         return Results.Json(new { detail = "Chỉ Quản trị viên (Admin) hoặc Trưởng nhóm (Leader) mới có quyền đánh dấu hoặc duyệt vắng ca trực!" }, statusCode: 403);
     }
 
+    if (!canManage && req.user_id != currentUser.id)
+    {
+        return Results.Json(new { detail = "Bạn chỉ có thể điểm danh hoặc báo có mặt cho chính mình!" }, statusCode: 403);
+    }
+
     using var conn = Database.GetConnection();
     var reg = conn.QueryFirstOrDefault(
         "SELECT id, attendance_status FROM shift_registrations WHERE user_id = @uid AND shift_id = @sid AND work_date = @wdate",
         new { uid = req.user_id, sid = req.shift_id, wdate = req.work_date }
     );
 
-    var newStatus = req.attendance_status == "absent" ? "absent" : "present";
+    var requestedStatus = (req.attendance_status ?? "").Trim().ToLower();
+    var newStatus = requestedStatus switch
+    {
+        "absent" => "absent",
+        "not_checked_in" or "unconfirmed" => "not_checked_in",
+        _ => "present"
+    };
+
     if (reg == null)
     {
         conn.Execute(@"
@@ -2968,18 +2980,53 @@ app.MapPost("/api/shifts/attendance/toggle", (ToggleAttendanceRequest req, HttpC
                 sid = req.shift_id, 
                 wdate = req.work_date, 
                 status = newStatus, 
-                note = $"Xác nhận điểm danh: {newStatus}" 
+                note = newStatus == "present" ? "Đã báo có mặt" : $"Cập nhật điểm danh: {newStatus}" 
             });
     }
     else
     {
-        conn.Execute("UPDATE shift_registrations SET attendance_status = @status WHERE id = @id", new { status = newStatus, id = (long)reg.id });
+        if (newStatus == "present")
+        {
+            conn.Execute(@"
+                UPDATE shift_registrations 
+                SET attendance_status = 'present',
+                    absence_reason = NULL,
+                    absence_approved_by = NULL,
+                    absence_approved_at = NULL,
+                    note = 'Đã báo có mặt'
+                WHERE id = @id", new { id = (long)reg.id });
+        }
+        else if (newStatus == "not_checked_in")
+        {
+            conn.Execute(@"
+                UPDATE shift_registrations 
+                SET attendance_status = 'not_checked_in',
+                    absence_reason = NULL,
+                    absence_approved_by = NULL,
+                    absence_approved_at = NULL,
+                    actual_hours = NULL,
+                    time_note = NULL,
+                    note = 'Chưa điểm danh có mặt'
+                WHERE id = @id", new { id = (long)reg.id });
+        }
+        else
+        {
+            conn.Execute("UPDATE shift_registrations SET attendance_status = @status WHERE id = @id", new { status = newStatus, id = (long)reg.id });
+        }
     }
+
+    string msg = newStatus switch
+    {
+        "present" => "Đã báo có mặt thành công!",
+        "not_checked_in" => "Đã hủy có mặt (chuyển về trạng thái chưa điểm danh)!",
+        "absent" => "Đã đánh dấu vắng mặt ca này!",
+        _ => "Đã cập nhật trạng thái điểm danh!"
+    };
 
     return Results.Ok(new { 
         success = true, 
         attendance_status = newStatus, 
-        message = newStatus == "absent" ? "Đã đánh dấu vắng mặt / thiếu ca!" : "Đã xác nhận có mặt thành công!" 
+        message = msg 
     });
 });
 
@@ -3020,7 +3067,7 @@ app.MapGet("/api/shifts/pending-requests", (HttpContext ctx) =>
     var sql = @"
         SELECT sr.id, sr.user_id, sr.shift_id, sr.work_date, sr.status, sr.note,
                sr.target_shift_id, sr.target_work_date, sr.request_reason, sr.created_at,
-               COALESCE(sr.attendance_status, 'present') as attendance_status, sr.absence_reason, sr.absence_reported_at,
+               COALESCE(sr.attendance_status, 'not_checked_in') as attendance_status, sr.absence_reason, sr.absence_reported_at,
                (sr.work_date < @today) as is_expired,
                u.full_name, u.username, u.email, u.phone, u.department,
                st.name as shift_name, st.start_time, st.end_time, st.label as shift_label,
@@ -4581,6 +4628,681 @@ app.MapPost("/api/emails/test-send", (TestEmailRequest req, HttpContext ctx) =>
         return Results.BadRequest(new { detail = error ?? "Không thể gửi email qua SMTP." });
 
     return Results.Ok(new { success = true, message = $"Đã gửi email thật thành công đến {req.recipient_email}!" });
+});
+
+// =========================================================================
+// API KHÓA CỬA THÔNG MINH (SMART DOOR LOCK IOT API)
+// Định dạng: /api/?key=...&macid=...&timestamp=...
+// Key mặc định: "09vjh9KZDp5t" (có thể tùy chỉnh động qua system_settings)
+// =========================================================================
+const string DEFAULT_DOOR_SECRET_KEY = "09vjh9KZDp5t";
+
+async Task<IResult> ProcessDoorLock(HttpContext ctx)
+{
+    string? key = ctx.Request.Query["key"].FirstOrDefault() 
+               ?? ctx.Request.Query["k"].FirstOrDefault();
+    string? macid = ctx.Request.Query["macid"].FirstOrDefault() 
+                 ?? ctx.Request.Query["mac"].FirstOrDefault() 
+                 ?? ctx.Request.Query["mac_id"].FirstOrDefault() 
+                 ?? ctx.Request.Query["device_id"].FirstOrDefault();
+    string? timestamp = ctx.Request.Query["timestamp"].FirstOrDefault() 
+                     ?? ctx.Request.Query["ts"].FirstOrDefault() 
+                     ?? ctx.Request.Query["time"].FirstOrDefault();
+    string? format = ctx.Request.Query["format"].FirstOrDefault();
+    string? card_uid = ctx.Request.Query["card_uid"].FirstOrDefault()
+                    ?? ctx.Request.Query["card"].FirstOrDefault()
+                    ?? ctx.Request.Query["rfid"].FirstOrDefault()
+                    ?? ctx.Request.Query["uid"].FirstOrDefault();
+
+    // Hỗ trợ cả trường hợp gửi POST JSON từ thiết bị hoặc webhook
+    if (ctx.Request.Method == "POST" && ctx.Request.HasJsonContentType())
+    {
+        try
+        {
+            var body = await ctx.Request.ReadFromJsonAsync<DoorLockPayload>();
+            if (body != null)
+            {
+                key ??= body.key;
+                macid ??= body.macid ?? body.mac;
+                timestamp ??= body.timestamp;
+                format ??= body.format;
+                card_uid ??= body.card_uid ?? body.card ?? body.rfid;
+            }
+        }
+        catch { }
+    }
+
+    string? actionParam = ctx.Request.Query["action"].FirstOrDefault() 
+                       ?? ctx.Request.Query["act"].FirstOrDefault();
+
+    if (string.Equals(actionParam, "add", StringComparison.OrdinalIgnoreCase) 
+     || string.Equals(actionParam, "add_card", StringComparison.OrdinalIgnoreCase))
+    {
+        return await HandleAddCard(ctx);
+    }
+
+    if (string.Equals(actionParam, "delete", StringComparison.OrdinalIgnoreCase) 
+     || string.Equals(actionParam, "delete_card", StringComparison.OrdinalIgnoreCase)
+     || string.Equals(actionParam, "del", StringComparison.OrdinalIgnoreCase)
+     || string.Equals(actionParam, "remove", StringComparison.OrdinalIgnoreCase))
+    {
+        return await HandleDeleteCard(ctx, null);
+    }
+
+    var localNow = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    var serverTime = localNow;
+    var clientIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+    // 1. Trường hợp không truyền bất kỳ tham số nào (Hướng dẫn sử dụng API)
+    if (string.IsNullOrEmpty(key) && string.IsNullOrEmpty(macid) && string.IsNullOrEmpty(timestamp) && string.IsNullOrEmpty(card_uid))
+    {
+        return Results.Ok(new
+        {
+            api = "Door Lock & RFID Cards IoT API - WorkShiftPro",
+            status = "online",
+            description = "API điều khiển, quẹt thẻ RFID và quản lý thẻ khóa cửa thông minh (IoT Door Lock)",
+            usage = "GET /api/?key=09vjh9KZDp5t&macid=<MAC_ADDRESS>&timestamp=<TIMESTAMP>&card_uid=<CARD_UID>",
+            endpoints = new
+            {
+                unlock_or_scan_card = "GET /api/?key=09vjh9KZDp5t&macid=...&timestamp=...&card_uid=...",
+                add_card = "POST /api/cards (hoặc GET /api/cards/add?key=...&card_uid=...&card_holder=...)",
+                delete_card = "DELETE /api/cards/{card_uid} (hoặc GET /api/cards/delete?key=...&card_uid=...)",
+                list_cards = "GET /api/cards?key=09vjh9KZDp5t",
+                toggle_card = "POST /api/cards/toggle (hoặc GET /api/cards/toggle?key=...&card_uid=...)"
+            },
+            server_time = serverTime
+        });
+    }
+
+    // 2. Kiểm tra mã key (ưu tiên từ system_settings, mặc định là 09vjh9KZDp5t)
+    string expectedKey = DEFAULT_DOOR_SECRET_KEY;
+    int relaySeconds = 5;
+    try
+    {
+        using var conn = Database.GetConnection();
+        var keySetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'");
+        if (!string.IsNullOrWhiteSpace(keySetting)) expectedKey = keySetting.Trim();
+        var durSetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_relay_duration'");
+        if (int.TryParse(durSetting, out var d) && d > 0) relaySeconds = d;
+    }
+    catch { }
+
+    bool isKeyValid = !string.IsNullOrEmpty(key) && string.Equals(key.Trim(), expectedKey, StringComparison.Ordinal);
+
+    // 3. Kiểm tra thẻ RFID nếu có truyền card_uid
+    bool isGranted = false;
+    string action = "none";
+    string statusMessage = "";
+    string? cardHolder = null;
+    DoorCardDto? cardInfo = null;
+
+    if (!string.IsNullOrWhiteSpace(card_uid))
+    {
+        card_uid = card_uid.Trim().ToUpper();
+        try
+        {
+            using var conn = Database.GetConnection();
+            cardInfo = conn.QueryFirstOrDefault<DoorCardDto>(
+                "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
+                new { uid = card_uid });
+        }
+        catch { }
+
+        if (!isKeyValid)
+        {
+            isGranted = false;
+            statusMessage = "Mã bảo mật khóa (key) không đúng hoặc không hợp lệ";
+        }
+        else if (cardInfo == null)
+        {
+            isGranted = false;
+            statusMessage = $"Thẻ chưa được đăng ký trong hệ thống (UID: {card_uid})";
+        }
+        else if (cardInfo.is_active == 0)
+        {
+            isGranted = false;
+            cardHolder = cardInfo.card_holder;
+            statusMessage = $"Thẻ đang bị khóa/vô hiệu hóa (UID: {card_uid} - {cardInfo.card_holder ?? "Chưa đặt tên"})";
+        }
+        else
+        {
+            isGranted = true;
+            action = "unlock";
+            cardHolder = cardInfo.card_holder;
+            statusMessage = $"Quẹt thẻ thành công: {cardInfo.card_holder ?? cardInfo.card_uid} (UID: {card_uid}). Cho phép mở cửa!";
+        }
+    }
+    else
+    {
+        // Nếu không quẹt thẻ mà chỉ gửi lệnh xác thực khóa qua Key
+        if (isKeyValid)
+        {
+            isGranted = true;
+            action = "unlock";
+            statusMessage = "Xác thực khóa thành công. Lệnh mở khóa cửa: UNLOCK";
+        }
+        else
+        {
+            isGranted = false;
+            statusMessage = "Mã khóa không đúng (Invalid key). Từ chối mở cửa.";
+        }
+    }
+
+    // Ghi nhật ký lịch sử mở cửa vào database (dùng giờ Việt Nam UTC+7)
+    try
+    {
+        using var conn = Database.GetConnection();
+        conn.Execute(@"
+            INSERT INTO door_access_logs (key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at)
+            VALUES (@k, @m, @cuid, @cholder, @t, @s, @a, @msg, @ip, @ca)",
+            new
+            {
+                k = key ?? "",
+                m = macid ?? "N/A",
+                cuid = card_uid ?? "",
+                cholder = cardHolder ?? "",
+                t = timestamp ?? "",
+                s = isGranted ? "granted" : "denied",
+                a = action,
+                msg = statusMessage,
+                ip = clientIp,
+                ca = localNow
+            });
+    }
+    catch { }
+
+    // Hỗ trợ định dạng plain text cho các vi điều khiển ESP8266/Arduino đọc giá trị thô
+    if (string.Equals(format, "text", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "raw", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Text(isGranted ? "UNLOCK" : "DENIED");
+    }
+
+    if (isGranted)
+    {
+        return Results.Ok(new
+        {
+            success = true,
+            status = "unlock",
+            access = "granted",
+            message = statusMessage,
+            key = expectedKey,
+            card_uid = card_uid,
+            card_holder = cardHolder,
+            macid = macid ?? "N/A",
+            timestamp = timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+            relay = 1,
+            duration_seconds = relaySeconds,
+            server_time = serverTime
+        });
+    }
+    else
+    {
+        return Results.Ok(new
+        {
+            success = false,
+            status = "denied",
+            access = "denied",
+            message = statusMessage,
+            card_uid = card_uid,
+            card_holder = cardHolder,
+            key_provided = key ?? "",
+            macid = macid ?? "N/A",
+            timestamp = timestamp ?? "",
+            server_time = serverTime
+        });
+    }
+}
+
+async Task HandleDoorLockRequest(HttpContext ctx)
+{
+    var result = await ProcessDoorLock(ctx);
+    await result.ExecuteAsync(ctx);
+}
+
+// Helper kiểm tra quyền quản lý thẻ (Key đúng HOẶC Admin/Leader)
+bool IsDoorManagerAuthorized(HttpContext ctx, string? providedKey)
+{
+    string expectedKey = DEFAULT_DOOR_SECRET_KEY;
+    try
+    {
+        using var conn = Database.GetConnection();
+        var keySetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'");
+        if (!string.IsNullOrWhiteSpace(keySetting)) expectedKey = keySetting.Trim();
+    }
+    catch { }
+
+    if (!string.IsNullOrWhiteSpace(providedKey) && string.Equals(providedKey.Trim(), expectedKey, StringComparison.Ordinal))
+        return true;
+
+    if (ctx.Request.Headers.TryGetValue("X-Door-Key", out var hKey) && string.Equals(hKey.ToString().Trim(), expectedKey, StringComparison.Ordinal))
+        return true;
+
+    var authH = ctx.Request.Headers.Authorization.ToString();
+    if (!string.IsNullOrWhiteSpace(authH) && authH.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+    {
+        var token = authH.Substring(7).Trim();
+        if (string.Equals(token, expectedKey, StringComparison.Ordinal)) return true;
+    }
+
+    try
+    {
+        var u = AuthService.GetCurrentUser(ctx);
+        if (u != null && (u.role == "admin" || u.role == "leader")) return true;
+    }
+    catch { }
+
+    return false;
+}
+
+// 1. Thêm hoặc Cập nhật Thẻ
+async Task<IResult> HandleAddCard(HttpContext ctx)
+{
+    string? key = ctx.Request.Query["key"].FirstOrDefault() ?? ctx.Request.Query["k"].FirstOrDefault();
+    string? card_uid = ctx.Request.Query["card_uid"].FirstOrDefault() ?? ctx.Request.Query["uid"].FirstOrDefault();
+    string? card_holder = ctx.Request.Query["card_holder"].FirstOrDefault() ?? ctx.Request.Query["name"].FirstOrDefault();
+    string? note = ctx.Request.Query["note"].FirstOrDefault();
+    long? user_id = null;
+    if (long.TryParse(ctx.Request.Query["user_id"].FirstOrDefault(), out var uidVal)) user_id = uidVal;
+    int? is_active = 1;
+    if (int.TryParse(ctx.Request.Query["is_active"].FirstOrDefault(), out var actVal)) is_active = actVal;
+
+    if (ctx.Request.HasJsonContentType())
+    {
+        try
+        {
+            var body = await ctx.Request.ReadFromJsonAsync<CreateDoorCardRequest>();
+            if (body != null)
+            {
+                key ??= body.key;
+                card_uid ??= body.card_uid;
+                card_holder ??= body.card_holder;
+                note ??= body.note;
+                user_id ??= body.user_id;
+                is_active = body.is_active ?? is_active;
+            }
+        }
+        catch { }
+    }
+
+    if (!IsDoorManagerAuthorized(ctx, key))
+    {
+        return Results.Json(new
+        {
+            success = false,
+            message = "Lỗi xác thực: Sai mã bảo mật 'key' hoặc bạn chưa đăng nhập tài khoản quản lý"
+        }, statusCode: 401);
+    }
+
+    if (string.IsNullOrWhiteSpace(card_uid))
+    {
+        return Results.Json(new
+        {
+            success = false,
+            message = "Thiếu thông tin bắt buộc: 'card_uid' (mã thẻ RFID không được để trống)"
+        }, statusCode: 400);
+    }
+
+    card_uid = card_uid.Trim().ToUpper();
+    var nowStr = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+
+    using var conn = Database.GetConnection();
+    var existing = conn.QueryFirstOrDefault<DoorCardDto>(
+        "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
+        new { uid = card_uid });
+
+    if (existing != null)
+    {
+        conn.Execute(@"
+            UPDATE door_cards
+            SET card_holder = @holder,
+                user_id = @uidVal,
+                is_active = @active,
+                note = @note,
+                updated_at = @now
+            WHERE id = @id",
+            new
+            {
+                holder = card_holder ?? existing.card_holder,
+                uidVal = user_id ?? existing.user_id,
+                active = is_active ?? existing.is_active,
+                note = note ?? existing.note,
+                now = nowStr,
+                id = existing.id
+            });
+
+        var updated = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE id = @id", new { id = existing.id });
+        return Results.Ok(new
+        {
+            success = true,
+            action = "updated",
+            message = $"Thẻ '{card_uid}' đã tồn tại trong hệ thống. Đã cập nhật lại thông tin chủ thẻ ({card_holder ?? existing.card_holder}).",
+            card = updated
+        });
+    }
+    else
+    {
+        conn.Execute(@"
+            INSERT INTO door_cards (card_uid, card_holder, user_id, is_active, note, created_at, updated_at)
+            VALUES (@card_uid, @holder, @uidVal, @active, @note, @now, @now)",
+            new
+            {
+                card_uid = card_uid,
+                holder = card_holder ?? "",
+                uidVal = user_id,
+                active = is_active ?? 1,
+                note = note ?? "",
+                now = nowStr
+            });
+
+        var created = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE UPPER(card_uid) = @uid", new { uid = card_uid });
+        return Results.Json(new
+        {
+            success = true,
+            action = "created",
+            message = $"Đã thêm thẻ mới '{card_uid}' ({card_holder ?? "Chưa đặt tên"}) vào hệ thống thành công.",
+            card = created
+        }, statusCode: 201);
+    }
+}
+
+// 2. Xóa Thẻ
+async Task<IResult> HandleDeleteCard(HttpContext ctx, string? routeUid = null)
+{
+    string? key = ctx.Request.Query["key"].FirstOrDefault() ?? ctx.Request.Query["k"].FirstOrDefault();
+    string? card_uid = routeUid 
+                    ?? ctx.Request.Query["card_uid"].FirstOrDefault() 
+                    ?? ctx.Request.Query["uid"].FirstOrDefault();
+    long? id = null;
+    if (long.TryParse(ctx.Request.Query["id"].FirstOrDefault(), out var idVal)) id = idVal;
+
+    if (ctx.Request.HasJsonContentType())
+    {
+        try
+        {
+            var body = await ctx.Request.ReadFromJsonAsync<DeleteDoorCardRequest>();
+            if (body != null)
+            {
+                key ??= body.key;
+                card_uid ??= body.card_uid;
+                id ??= body.id;
+            }
+        }
+        catch { }
+    }
+
+    if (!IsDoorManagerAuthorized(ctx, key))
+    {
+        return Results.Json(new
+        {
+            success = false,
+            message = "Lỗi xác thực: Sai mã bảo mật 'key' hoặc bạn chưa đăng nhập tài khoản quản lý"
+        }, statusCode: 401);
+    }
+
+    if (string.IsNullOrWhiteSpace(card_uid) && !id.HasValue)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            message = "Thiếu thông tin: cần cung cấp 'card_uid' hoặc 'id' của thẻ cần xóa"
+        }, statusCode: 400);
+    }
+
+    using var conn = Database.GetConnection();
+    DoorCardDto? target = null;
+    if (id.HasValue)
+    {
+        target = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE id = @id", new { id = id.Value });
+    }
+    else if (!string.IsNullOrWhiteSpace(card_uid))
+    {
+        target = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE UPPER(card_uid) = @uid", new { uid = card_uid.Trim().ToUpper() });
+    }
+
+    if (target == null)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            message = $"Không tìm thấy thẻ '{card_uid ?? id?.ToString()}' trong hệ thống"
+        }, statusCode: 404);
+    }
+
+    conn.Execute("DELETE FROM door_cards WHERE id = @id", new { id = target.id });
+
+    return Results.Ok(new
+    {
+        success = true,
+        message = $"Đã xóa thẻ '{target.card_uid}' ({target.card_holder ?? "Không tên"}) thành công khỏi hệ thống.",
+        deleted_card = target
+    });
+}
+
+// 3. Danh Sách Thẻ
+async Task<IResult> HandleListCards(HttpContext ctx)
+{
+    string? key = ctx.Request.Query["key"].FirstOrDefault() ?? ctx.Request.Query["k"].FirstOrDefault();
+    if (!IsDoorManagerAuthorized(ctx, key))
+    {
+        return Results.Json(new { success = false, message = "Chưa được cấp quyền (Sai key hoặc chưa đăng nhập)" }, statusCode: 401);
+    }
+
+    string? search = ctx.Request.Query["search"].FirstOrDefault();
+    int? isActive = null;
+    if (int.TryParse(ctx.Request.Query["is_active"].FirstOrDefault(), out var act)) isActive = act;
+
+    using var conn = Database.GetConnection();
+    var sql = "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE 1=1";
+    var prms = new DynamicParameters();
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        sql += " AND (UPPER(card_uid) LIKE @s OR LOWER(card_holder) LIKE @s OR LOWER(note) LIKE @s)";
+        prms.Add("s", $"%{search.Trim().ToLower()}%");
+    }
+    if (isActive.HasValue)
+    {
+        sql += " AND is_active = @act";
+        prms.Add("act", isActive.Value);
+    }
+    sql += " ORDER BY id DESC";
+
+    var cards = conn.Query<DoorCardDto>(sql, prms).ToList();
+    return Results.Ok(new
+    {
+        success = true,
+        total = cards.Count,
+        cards
+    });
+}
+
+// 4. Bật / Tắt trạng thái Thẻ (Khóa hoặc Mở khóa)
+async Task<IResult> HandleToggleCard(HttpContext ctx, string? routeUid = null)
+{
+    string? key = ctx.Request.Query["key"].FirstOrDefault() ?? ctx.Request.Query["k"].FirstOrDefault();
+    string? card_uid = routeUid 
+                    ?? ctx.Request.Query["card_uid"].FirstOrDefault() 
+                    ?? ctx.Request.Query["uid"].FirstOrDefault();
+    long? id = null;
+    if (long.TryParse(ctx.Request.Query["id"].FirstOrDefault(), out var idVal)) id = idVal;
+
+    if (ctx.Request.HasJsonContentType())
+    {
+        try
+        {
+            var body = await ctx.Request.ReadFromJsonAsync<DeleteDoorCardRequest>();
+            if (body != null)
+            {
+                key ??= body.key;
+                card_uid ??= body.card_uid;
+                id ??= body.id;
+            }
+        }
+        catch { }
+    }
+
+    if (!IsDoorManagerAuthorized(ctx, key))
+    {
+        return Results.Json(new { success = false, message = "Chưa được cấp quyền (Sai key hoặc chưa đăng nhập)" }, statusCode: 401);
+    }
+
+    if (string.IsNullOrWhiteSpace(card_uid) && !id.HasValue)
+    {
+        return Results.Json(new { success = false, message = "Thiếu thông tin: cần cung cấp card_uid hoặc id" }, statusCode: 400);
+    }
+
+    using var conn = Database.GetConnection();
+    DoorCardDto? target = null;
+    if (id.HasValue) target = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE id = @id", new { id = id.Value });
+    else if (!string.IsNullOrWhiteSpace(card_uid)) target = conn.QueryFirstOrDefault<DoorCardDto>("SELECT * FROM door_cards WHERE UPPER(card_uid) = @uid", new { uid = card_uid.Trim().ToUpper() });
+
+    if (target == null)
+    {
+        return Results.Json(new { success = false, message = "Không tìm thấy thẻ trong hệ thống" }, statusCode: 404);
+    }
+
+    int newStatus = target.is_active == 1 ? 0 : 1;
+    var nowStr = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    conn.Execute("UPDATE door_cards SET is_active = @act, updated_at = @now WHERE id = @id",
+        new { act = newStatus, now = nowStr, id = target.id });
+
+    target.is_active = newStatus;
+    target.updated_at = nowStr;
+
+    return Results.Ok(new
+    {
+        success = true,
+        message = newStatus == 1 ? $"Đã kích hoạt/mở khóa thẻ '{target.card_uid}' thành công" : $"Đã tạm khóa thẻ '{target.card_uid}'",
+        card = target
+    });
+}
+
+// Đăng ký endpoint theo đúng định dạng người dùng yêu cầu: /api/?key=...&macid=...&timestamp=...&card_uid=...
+app.MapGet("/api", HandleDoorLockRequest);
+app.MapPost("/api", HandleDoorLockRequest);
+app.MapGet("/api/door", HandleDoorLockRequest);
+app.MapPost("/api/door", HandleDoorLockRequest);
+app.MapGet("/api/door-lock", HandleDoorLockRequest);
+app.MapPost("/api/door-lock", HandleDoorLockRequest);
+
+// Đăng ký các endpoints Thêm và Xóa Thẻ (Cards Management API)
+app.MapPost("/api/cards", async (HttpContext ctx) => { var r = await HandleAddCard(ctx); await r.ExecuteAsync(ctx); });
+app.MapPost("/api/cards/add", async (HttpContext ctx) => { var r = await HandleAddCard(ctx); await r.ExecuteAsync(ctx); });
+app.MapGet("/api/cards/add", async (HttpContext ctx) => { var r = await HandleAddCard(ctx); await r.ExecuteAsync(ctx); });
+app.MapPost("/api/door/cards", async (HttpContext ctx) => { var r = await HandleAddCard(ctx); await r.ExecuteAsync(ctx); });
+
+app.MapDelete("/api/cards/{card_uid}", async (string card_uid, HttpContext ctx) => { var r = await HandleDeleteCard(ctx, card_uid); await r.ExecuteAsync(ctx); });
+app.MapDelete("/api/cards", async (HttpContext ctx) => { var r = await HandleDeleteCard(ctx, null); await r.ExecuteAsync(ctx); });
+app.MapPost("/api/cards/delete", async (HttpContext ctx) => { var r = await HandleDeleteCard(ctx, null); await r.ExecuteAsync(ctx); });
+app.MapGet("/api/cards/delete", async (HttpContext ctx) => { var r = await HandleDeleteCard(ctx, null); await r.ExecuteAsync(ctx); });
+
+app.MapGet("/api/cards", async (HttpContext ctx) => { var r = await HandleListCards(ctx); await r.ExecuteAsync(ctx); });
+app.MapGet("/api/door/cards", async (HttpContext ctx) => { var r = await HandleListCards(ctx); await r.ExecuteAsync(ctx); });
+
+app.MapPost("/api/cards/toggle", async (HttpContext ctx) => { var r = await HandleToggleCard(ctx, null); await r.ExecuteAsync(ctx); });
+app.MapGet("/api/cards/toggle", async (HttpContext ctx) => { var r = await HandleToggleCard(ctx, null); await r.ExecuteAsync(ctx); });
+app.MapPost("/api/cards/{card_uid}/toggle", async (string card_uid, HttpContext ctx) => { var r = await HandleToggleCard(ctx, card_uid); await r.ExecuteAsync(ctx); });
+
+// Endpoint xem nhật ký lịch sử mở khóa cửa
+app.MapGet("/api/door/logs", (int? limit, HttpContext ctx) =>
+{
+    var maxRows = Math.Clamp(limit ?? 50, 1, 500);
+    using var conn = Database.GetConnection();
+    var logs = conn.Query<DoorAccessLogDto>(@"
+        SELECT id, key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at
+        FROM door_access_logs
+        ORDER BY id DESC
+        LIMIT @limit", new { limit = maxRows });
+
+    return Results.Ok(new
+    {
+        success = true,
+        total = logs.Count(),
+        logs
+    });
+});
+
+// Endpoint lấy cấu hình khóa cửa hiện tại
+app.MapGet("/api/door/settings", (HttpContext ctx) =>
+{
+    using var conn = Database.GetConnection();
+    var key = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'") ?? DEFAULT_DOOR_SECRET_KEY;
+    var durStr = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_relay_duration'") ?? "5";
+    int.TryParse(durStr, out var dur);
+
+    return Results.Ok(new
+    {
+        success = true,
+        key = key.Trim(),
+        relay_duration = dur > 0 ? dur : 5,
+        default_key = DEFAULT_DOOR_SECRET_KEY,
+        api_url = "/api/?key=" + key.Trim() + "&macid=<MAC>&timestamp=<TIME>&card_uid=<CARD_UID>"
+    });
+});
+
+// Endpoint cập nhật cấu hình khóa cửa (dành cho Admin / Leader)
+app.MapPost("/api/door/settings", (DoorSettingsRequest req, HttpContext ctx) =>
+{
+    var currentUser = AuthService.GetCurrentUser(ctx);
+    if (currentUser == null || (currentUser.role != "admin" && currentUser.role != "leader"))
+    {
+        return Results.StatusCode(403);
+    }
+
+    using var conn = Database.GetConnection();
+    if (!string.IsNullOrWhiteSpace(req.key))
+    {
+        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_secret_key', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.key.Trim() });
+    }
+    if (req.relay_duration.HasValue && req.relay_duration.Value > 0)
+    {
+        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_relay_duration', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.relay_duration.Value.ToString() });
+    }
+
+    return Results.Ok(new { success = true, message = "Đã cập nhật cấu hình khóa cửa thành công!" });
+});
+
+// Endpoint mở khóa cửa từ xa từ giao diện web (Admin Remote Unlock)
+app.MapPost("/api/door/unlock-remote", (HttpContext ctx) =>
+{
+    var currentUser = AuthService.GetCurrentUser(ctx);
+    if (currentUser == null) return Results.Unauthorized();
+
+    var clientIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "web-admin";
+    using var conn = Database.GetConnection();
+    var key = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'") ?? DEFAULT_DOOR_SECRET_KEY;
+
+    var localNowUnlock = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
+    conn.Execute(@"
+        INSERT INTO door_access_logs (key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at)
+        VALUES (@k, 'WEB_REMOTE_ADMIN', 'ADMIN_REMOTE', @cholder, @t, 'granted', 'unlock', @msg, @ip, @ca)",
+        new
+        {
+            k = key,
+            cholder = currentUser.full_name ?? currentUser.username,
+            t = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+            msg = $"Mở khóa từ xa bởi người dùng: {currentUser.full_name} (@{currentUser.username})",
+            ip = clientIp,
+            ca = localNowUnlock
+        });
+
+    return Results.Ok(new
+    {
+        success = true,
+        status = "unlock",
+        message = $"Đã kích hoạt lệnh mở khóa cửa từ xa bởi {currentUser.full_name}!"
+    });
+});
+
+// Endpoint xóa nhật ký mở khóa cửa
+app.MapDelete("/api/door/logs", (HttpContext ctx) =>
+{
+    var currentUser = AuthService.GetCurrentUser(ctx);
+    if (currentUser == null || currentUser.role != "admin") return Results.StatusCode(403);
+
+    using var conn = Database.GetConnection();
+    conn.Execute("DELETE FROM door_access_logs");
+    return Results.Ok(new { success = true, message = "Đã xóa toàn bộ nhật ký mở khóa cửa!" });
 });
 
 if (hasFrontend)

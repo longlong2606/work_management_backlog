@@ -389,3 +389,70 @@ public record UpdateCompetencyRequest(
     string? commitment_level,
     string? evidence_notes
 );
+
+public class DoorLockPayload
+{
+    public string? key { get; set; }
+    public string? macid { get; set; }
+    public string? mac { get; set; }
+    public string? timestamp { get; set; }
+    public string? format { get; set; }
+    public string? card_uid { get; set; }
+    public string? card { get; set; }
+    public string? rfid { get; set; }
+}
+
+public class DoorAccessLogDto
+{
+    public long id { get; set; }
+    public string? key_used { get; set; }
+    public string? macid { get; set; }
+    public string? card_uid { get; set; }
+    public string? card_holder { get; set; }
+    public string? device_timestamp { get; set; }
+    public string status { get; set; } = "";
+    public string action { get; set; } = "unlock";
+    public string? message { get; set; }
+    public string? ip_address { get; set; }
+    public string created_at { get; set; } = "";
+}
+
+public class DoorCardDto
+{
+    public long id { get; set; }
+    public string card_uid { get; set; } = "";
+    public string? card_holder { get; set; }
+    public long? user_id { get; set; }
+    public int is_active { get; set; } = 1;
+    public string? note { get; set; }
+    public string created_at { get; set; } = "";
+    public string? updated_at { get; set; }
+}
+
+public class CreateDoorCardRequest
+{
+    public string? card_uid { get; set; }
+    public string? card_holder { get; set; }
+    public long? user_id { get; set; }
+    public int? is_active { get; set; } = 1;
+    public string? note { get; set; }
+    public string? key { get; set; }
+}
+
+public class DeleteDoorCardRequest
+{
+    public string? card_uid { get; set; }
+    public long? id { get; set; }
+    public string? key { get; set; }
+}
+
+public class UpdateDoorCardRequest
+{
+    public string? card_holder { get; set; }
+    public long? user_id { get; set; }
+    public int? is_active { get; set; }
+    public string? note { get; set; }
+    public string? key { get; set; }
+}
+
+public record DoorSettingsRequest(string? key, int? relay_duration);

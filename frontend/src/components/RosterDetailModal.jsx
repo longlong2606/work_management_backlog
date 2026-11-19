@@ -103,9 +103,9 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
             >
               <Users size={18} color="#2563eb" />
               {(() => {
+                const present = members.filter(m => m.attendance_status === 'present').length;
                 const absent = members.filter(m => m.attendance_status === 'absent').length;
-                const present = Math.max(0, members.length - absent);
-                return `DANH SÁCH THÀNH VIÊN TRỰC (${present}/${members.length} NGƯỜI CÓ MẶT${absent > 0 ? ` • ${absent} VẮNG` : ""})`;
+                return `DANH SÁCH THÀNH VIÊN TRỰC (${present}/${members.length} ĐÃ BÁO CÓ MẶT)`;
               })()}
             </h4>
 
@@ -125,7 +125,12 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {members.map((m, idx) => {
+                  const isPresent = m.attendance_status === "present";
                   const isAbsent = m.attendance_status === "absent";
+                  const cardBg = isPresent ? "#f0fdf4" : isAbsent ? "#fef2f2" : "#f8fafc";
+                  const cardBorder = isPresent ? "1px solid #bbf7d0" : isAbsent ? "1px solid #fecaca" : "1px solid #e2e8f0";
+                  const avatarBg = isPresent ? "#10b981" : isAbsent ? "#ef4444" : "#94a3b8";
+
                   return (
                     <div
                       key={m.id || idx}
@@ -135,8 +140,8 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
                         alignItems: "center",
                         padding: "12px 16px",
                         borderRadius: 12,
-                        background: isAbsent ? "#fef2f2" : "#f0fdf4",
-                        border: isAbsent ? "1px solid #fecaca" : "1px solid #bbf7d0"
+                        background: cardBg,
+                        border: cardBorder
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -145,7 +150,7 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
                             width: 38,
                             height: 38,
                             borderRadius: "50%",
-                            background: isAbsent ? "#ef4444" : "#10b981",
+                            background: avatarBg,
                             color: "#ffffff",
                             display: "flex",
                             alignItems: "center",
@@ -169,7 +174,23 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
                       </div>
 
                       <div>
-                        {isAbsent ? (
+                        {isPresent ? (
+                          <span
+                            style={{
+                              background: "#dcfce7",
+                              color: "#15803d",
+                              padding: "4px 10px",
+                              borderRadius: 20,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4
+                            }}
+                          >
+                            <CheckCircle2 size={14} /> Đã có mặt
+                          </span>
+                        ) : isAbsent ? (
                           <div style={{ textAlign: "right" }}>
                             <span
                               style={{
@@ -192,8 +213,8 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
                         ) : (
                           <span
                             style={{
-                              background: "#dcfce7",
-                              color: "#15803d",
+                              background: "#f1f5f9",
+                              color: "#64748b",
                               padding: "4px 10px",
                               borderRadius: 20,
                               fontSize: 12,
@@ -203,7 +224,7 @@ export function RosterDetailModal({ shift, dateStr, members, events, onClose }) 
                               gap: 4
                             }}
                           >
-                            <CheckCircle2 size={14} /> Có mặt
+                            ⚪ Chưa điểm danh
                           </span>
                         )}
                       </div>

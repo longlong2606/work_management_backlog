@@ -1,5 +1,4 @@
 import { KpiLeaderboardModal } from "../components/KpiLeaderboardModal";
-import { BulkAbsenceModal } from "../components/BulkAbsenceModal";
 import { ClassScheduleModal } from "../components/ClassScheduleModal";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { SHIFTS } from "../constants/shifts";
@@ -265,9 +264,6 @@ export function SchedulePage() {
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [showKpiModal, setShowKpiModal] = useState(false);
-  const [showBulkAbsenceModal, setShowBulkAbsenceModal] = useState(false);
-  const [bulkAbsenceMode, setBulkAbsenceMode] = useState("absence");
-  const [bulkAbsenceDate, setBulkAbsenceDate] = useState(null);
   const [showClassScheduleModal, setShowClassScheduleModal] = useState(false);
   const [classConflicts, setClassConflicts] = useState([]);
   const LAB_KPI_TARGET = 20.0;
@@ -416,9 +412,47 @@ export function SchedulePage() {
     });
   };
 
-  // Handle Admin Approve or Reject Absence
-    // Admin đánh dấu nhân sự vắng mặt / bỏ ca trực tiếp
-    // Mở modal chỉnh giờ làm thực tế
+  // Handle Check-in (Điểm danh / Báo có mặt)
+  const handleCheckIn = async (shiftId, workDate, targetUserId = null, staffName = null) => {
+    const effectiveTargetId = targetUserId || user?.id;
+    try {
+      const res = await api.checkInShift({
+        userId: effectiveTargetId,
+        shiftId: shiftId,
+        workDate: workDate,
+      });
+      showToast(res?.message || (staffName ? `Đã điểm danh có mặt cho ${staffName}!` : "Đã báo có mặt thành công! (+1.5h KPI)"));
+      await fetchSchedule();
+      if (rosterModal.open && rosterModal.shift) {
+        const data = await api.getShiftRoster(rosterModal.shift.id, rosterModal.day.dateStr);
+        setRosterModal((prev) => ({ ...prev, rosterList: data || [] }));
+      }
+    } catch (err) {
+      showToast("Lỗi khi điểm danh: " + (err.message || ""), "danger");
+    }
+  };
+
+  // Handle Cancel Check-in (Hủy điểm danh có mặt -> trở về chưa điểm danh)
+  const handleCancelCheckIn = async (shiftId, workDate, targetUserId = null, staffName = null) => {
+    const effectiveTargetId = targetUserId || user?.id;
+    try {
+      const res = await api.cancelCheckIn({
+        userId: effectiveTargetId,
+        shiftId: shiftId,
+        workDate: workDate,
+      });
+      showToast(res?.message || (staffName ? `Đã hủy có mặt cho ${staffName}!` : "Đã hủy điểm danh ca trực!"));
+      await fetchSchedule();
+      if (rosterModal.open && rosterModal.shift) {
+        const data = await api.getShiftRoster(rosterModal.shift.id, rosterModal.day.dateStr);
+        setRosterModal((prev) => ({ ...prev, rosterList: data || [] }));
+      }
+    } catch (err) {
+      showToast("Lỗi khi hủy điểm danh: " + (err.message || ""), "danger");
+    }
+  };
+
+  // Mở modal chỉnh giờ làm thực tế
   const openEditHours = (member) => {
     const stdHours = 1.5;
     const curHours = (member.actual_hours !== null && member.actual_hours !== undefined)
@@ -986,52 +1020,52 @@ export function SchedulePage() {
 
   const myTodayHours = useMemo(() => {
     return myShiftsToday.reduce((sum, s) => {
-      if (s.attendance_status === "absent" || s.attendance_status === "pending_absence") return sum;
+      if (s.attendance_status !== "present") return sum;
       const shiftDuration = 1.5;
       const dur = s.actual_hours != null && Number(s.actual_hours) >= 0 ? Number(s.actual_hours) : shiftDuration;
       return sum + dur;
     }, 0);
   }, [myShiftsToday]);
 
-  // Tổng số giờ làm việc thực tế được xếp lịch của người dùng trong tuần (mỗi ca chuẩn 1.5 tiếng)
+  // Tổng số giờ làm việc thực tế đã có mặt của người dùng trong tuần
   const myActualAssignedHours = useMemo(() => {
     return myShiftsInWeek.reduce((sum, s) => {
-      if (s.attendance_status === "absent" || s.attendance_status === "pending_absence") return sum;
+      if (s.attendance_status !== "present") return sum;
       const shiftDuration = 1.5;
       const dur = s.actual_hours != null && Number(s.actual_hours) >= 0 ? Number(s.actual_hours) : shiftDuration;
       return sum + dur;
     }, 0);
   }, [myShiftsInWeek]);
 
-  // KPI analysis for current user: Chuẩn 20.0h / tuần (tính lũy kế cả tuần 7 ngày)
+  // KPI analysis for current user: Chuẩn 20.0h / tuần (bắt đầu từ 0h, mỗi ca có mặt sẽ cộng lên)
   const myKpiStats = useMemo(() => {
-    let absentHours = 0;
-    let absentCount = 0;
-    let explicitAssignedHours = 0;
+    let presentHours = 0;
+    let presentCount = 0;
+    let totalScheduledHours = 0;
 
     myShiftsInWeek.forEach((s) => {
       const standardDuration = 1.5;
-      const isAbsent = s.attendance_status === "absent" || s.attendance_status === "pending_absence";
-      if (isAbsent) {
-        absentHours += standardDuration;
-        absentCount += 1;
-        explicitAssignedHours += standardDuration;
-      } else {
-        const dur = s.actual_hours != null && Number(s.actual_hours) >= 0 ? Number(s.actual_hours) : standardDuration;
-        explicitAssignedHours += dur;
+      const dur = s.actual_hours != null && Number(s.actual_hours) >= 0 ? Number(s.actual_hours) : standardDuration;
+      totalScheduledHours += standardDuration;
+
+      if (s.attendance_status === "present") {
+        presentHours += dur;
+        presentCount += 1;
       }
     });
 
-    const totalAssignedHours = explicitAssignedHours > 0 ? explicitAssignedHours : (myShiftsInWeek.length === 0 ? 0 : LAB_KPI_TARGET);
-    const validKpiHours = Math.max(0, totalAssignedHours - absentHours);
+    const validKpiHours = presentHours;
     const kpiPercent = Math.min(100, Math.round((validKpiHours / LAB_KPI_TARGET) * 100));
 
     return {
-      totalAssignedHours,
-      absentHours,
-      absentCount,
+      totalAssignedHours: totalScheduledHours,
+      presentHours,
+      presentCount,
+      absentHours: 0,
+      absentCount: 0,
       validKpiHours,
       kpiPercent,
+      isMet: validKpiHours >= LAB_KPI_TARGET,
     };
   }, [myShiftsInWeek]);
 
@@ -1128,8 +1162,7 @@ export function SchedulePage() {
             </span>
           </h1>
           <p className="page-subtitle-mobile-hide" style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.4 }}>
-            Ô ca hiển thị gọn <strong>{totalMembers > 0 ? `${totalMembers} người` : "danh sách"}</strong> (nhấn vào để xem đầy đủ ai có mặt, ai vắng
-            mặt kèm lý do). Nhân viên vắng phải báo vắng kèm lý do cho Quản lý.
+            Ô ca hiển thị gọn <strong>{totalMembers > 0 ? `${totalMembers} người` : "danh sách"}</strong> (nhấn vào ô để xem danh sách điểm danh). Nhân viên vào ca trực vui lòng bấm "Báo có mặt".
           </p>
         </div>
 
@@ -1228,59 +1261,6 @@ export function SchedulePage() {
             <span>TKB Học Tập (CSV)</span>
           </button>
 
-          <button
-            onClick={() => {
-              setBulkAbsenceMode("absence");
-              setShowBulkAbsenceModal(true);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              background: "#ef4444",
-              border: "2px solid #dc2626",
-              color: "#ffffff",
-              padding: "8px 14px",
-              borderRadius: 8,
-              fontWeight: 800,
-              fontSize: 13,
-              cursor: "pointer",
-              boxShadow: "0 3px 8px rgba(239, 68, 68, 0.35)",
-              transition: "all 0.2s ease"
-            }}
-            title="Báo vắng nhiều ca làm việc hoặc báo vắng cả tuần"
-          >
-            <CalendarX2 size={16} style={{ flexShrink: 0 }} />
-            <span>Báo Vắng Tuần / Nhiều Ca</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setBulkAbsenceDate(null);
-              setBulkAbsenceMode("restore");
-              setShowBulkAbsenceModal(true);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              background: "#f0fdf4",
-              border: "1.5px solid #bbf7d0",
-              color: "#166534",
-              padding: "8px 14px",
-              borderRadius: 8,
-              fontWeight: 700,
-              fontSize: 13,
-              cursor: "pointer",
-              boxShadow: "0 2px 4px rgba(22, 101, 52, 0.08)",
-              transition: "all 0.2s ease"
-            }}
-            title="Khôi phục có mặt hàng loạt cho cả tuần hoặc nhiều ca đã báo vắng"
-          >
-            <RotateCcw size={16} style={{ flexShrink: 0 }} />
-            <span>Khôi Phục Có Mặt Tuần / Ca</span>
-          </button>
-
           {isAdmin && (
             <button
               onClick={() => setShowPublishModal(true)}
@@ -1316,52 +1296,23 @@ export function SchedulePage() {
           className="card"
           style={{
             padding: 14,
-            borderLeft: myKpiStats.validKpiHours >= 20 ? "4px solid #10b981" : (myKpiStats.absentCount > 0 ? "4px solid #ef4444" : "4px solid #3b82f6"),
-            background: myKpiStats.validKpiHours >= 20 ? "#f0fdf4" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#fef2f2" : undefined),
+            borderLeft: myKpiStats.validKpiHours >= 20 ? "4px solid #10b981" : "4px solid #3b82f6",
+            background: myKpiStats.validKpiHours >= 20 ? "#f0fdf4" : undefined,
           }}
         >
-          <div style={{ fontSize: 12, color: (myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#991b1b" : "var(--text-muted)", fontWeight: 600 }}>
-            {viewMode === "day" ? "Ca trực ngày & KPI tuần" : "Ca trực & Quỹ KPI tuần này"}
+          <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+            {viewMode === "day" ? "Ca trực ngày & KPI tuần" : "Tiến độ tích lũy KPI tuần"}
           </div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: myKpiStats.validKpiHours >= 20 ? "#10b981" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#dc2626" : "#1e293b"), marginTop: 4 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: myKpiStats.validKpiHours >= 20 ? "#10b981" : "#1e293b", marginTop: 4 }}>
             {myKpiStats.validKpiHours.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 600, color: "#64748b" }}>/ 20.0 giờ tuần</span>
           </div>
           <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>
             {viewMode === "day" ? (
-              <span>Hôm nay: <strong>{myShiftsToday.length} ca ({myTodayHours.toFixed(1)}h)</strong> • Tuần: {myShiftsInWeek.length - myKpiStats.absentCount}/{myShiftsInWeek.length} ca</span>
+              <span>Hôm nay: <strong>{myShiftsToday.filter(s => s.attendance_status === "present").length}/{myShiftsToday.length} ca có mặt ({myTodayHours.toFixed(1)}h)</strong> • Tuần: {myKpiStats.presentCount}/{myShiftsInWeek.length} ca</span>
             ) : (
-              <span>Đã hoàn thành <strong>{myShiftsInWeek.length - myKpiStats.absentCount}/{myShiftsInWeek.length} ca</strong> trong tuần</span>
+              <span>Đã có mặt <strong>{myKpiStats.presentCount}/{myShiftsInWeek.length} ca</strong> (+{myKpiStats.validKpiHours.toFixed(1)}h KPI)</span>
             )}
           </div>
-          {myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20 && (
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#b91c1c", marginTop: 4 }}>
-              ⚠️ Đã trừ: -{myKpiStats.absentHours.toFixed(1)}h KPI ({myKpiStats.absentCount} ca vắng)
-            </div>
-          )}
-          {myKpiStats.absentCount > 0 && (
-            <button
-              onClick={handleQuickRestoreWeek}
-              style={{
-                marginTop: 6,
-                background: "#ffffff",
-                border: "1.5px solid #86efac",
-                borderRadius: 6,
-                padding: "3px 9px",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "#15803d",
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
-              }}
-              title="Khôi phục toàn bộ ca vắng trong tuần về Có Mặt để bảo toàn KPI tuần"
-            >
-              <RotateCcw size={12} />
-              <span>Khôi phục các ca vắng tuần này</span>
-            </button>
-          )}
         </div>
 
         <div className="card" style={{ padding: 14, borderLeft: "4px solid #8b5cf6" }}>
@@ -1389,22 +1340,20 @@ export function SchedulePage() {
             <div style={{ fontSize: 12, color: "#059669", fontWeight: 700 }}>
               🎯 Tiến Độ KPI Tuần (Chuẩn 20h/tuần)
             </div>
-            <span style={{ fontSize: 11, background: myKpiStats.validKpiHours >= 20 ? "#dcfce7" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#fee2e2" : "#fef3c7"), color: myKpiStats.validKpiHours >= 20 ? "#15803d" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#b91c1c" : "#b45309"), padding: "2px 8px", borderRadius: 12, fontWeight: 700 }}>
+            <span style={{ fontSize: 11, background: myKpiStats.validKpiHours >= 20 ? "#dcfce7" : "#eff6ff", color: myKpiStats.validKpiHours >= 20 ? "#15803d" : "#1d4ed8", padding: "2px 8px", borderRadius: 12, fontWeight: 700 }}>
               {myKpiStats.validKpiHours >= 20 ? "Đạt chuẩn 100%" : `${myKpiStats.kpiPercent}%`}
             </span>
           </div>
 
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 4 }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: myKpiStats.validKpiHours >= 20 ? "#059669" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#dc2626" : "#0f172a") }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: myKpiStats.validKpiHours >= 20 ? "#059669" : "#0f172a" }}>
               {myKpiStats.validKpiHours.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>/ 20.0 giờ</span>
             </div>
             <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
               {myKpiStats.validKpiHours >= 20 ? (
                 <span style={{ color: "#16a34a", fontWeight: 700 }}>✅ Đã đạt mục tiêu 20h tuần!</span>
-              ) : myKpiStats.absentCount > 0 ? (
-                <span style={{ color: "#dc2626" }}>Còn thiếu {(20 - myKpiStats.validKpiHours).toFixed(1)}h (đã trừ {myKpiStats.absentHours.toFixed(1)}h vắng)</span>
               ) : (
-                <span>Còn thiếu {(20 - myKpiStats.validKpiHours).toFixed(1)}h trong tuần</span>
+                <span>Còn cần {(20 - myKpiStats.validKpiHours).toFixed(1)}h (mỗi ca +1.5h)</span>
               )}
             </div>
           </div>
@@ -1414,13 +1363,13 @@ export function SchedulePage() {
               style={{
                 height: "100%",
                 width: `${myKpiStats.kpiPercent}%`,
-                background: myKpiStats.validKpiHours >= 20 ? "#10b981" : ((myKpiStats.absentCount > 0 && myKpiStats.validKpiHours < 20) ? "#ef4444" : "#f59e0b"),
+                background: myKpiStats.validKpiHours >= 20 ? "#10b981" : "#2563eb",
                 transition: "width 0.3s ease",
               }}
             />
           </div>
           <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4, display: "flex", justifyContent: "space-between" }}>
-            <span>Lũy kế cả tuần 7 ngày (~3.3h/ngày)</span>
+            <span>Bắt đầu từ 0h • Báo có mặt để tích lũy</span>
             <span style={{ color: "#059669", fontWeight: 600 }}>Xem bảng xếp hạng →</span>
           </div>
         </div>
@@ -1831,17 +1780,11 @@ export function SchedulePage() {
                     {/* 7 Days Columns for this Shift */}
                     {weekDays.map((day) => {
                       const isExpanded = expandedDay === day.dateStr;
-                      const absentInSlot = schedule.filter(
+                      const presentInSlot = schedule.filter(
                         (s) =>
                           s.shift_id === shift.id &&
                           s.work_date === day.dateStr &&
-                          s.attendance_status === "absent"
-                      );
-                      const pendingInSlot = schedule.filter(
-                        (s) =>
-                          s.shift_id === shift.id &&
-                          s.work_date === day.dateStr &&
-                          s.attendance_status === "pending_absence"
+                          s.attendance_status === "present"
                       );
                       const conflictsInSlot = classConflicts.filter(
                         (c) => c.shift_id === shift.id && c.work_date === day.dateStr
@@ -1858,16 +1801,9 @@ export function SchedulePage() {
                             (s) => s.shift_id === shift.id && s.work_date === day.dateStr && s.user_id === activeUserId
                           )
                         : null;
-                      const isTargetPending = targetRegInSlot?.attendance_status === "pending_absence";
-                      const isTargetAbsent = targetRegInSlot?.attendance_status === "absent";
-                      const absentCount = absentInSlot.length;
+                      const isTargetPresent = targetRegInSlot?.attendance_status === "present";
                       const slotTotal = totalMembers > 0 ? totalMembers : 21;
-                      const presentCount = Math.max(0, slotTotal - absentCount);
-
-                      // CHỈ HIỆN ĐỎ KHI NHÂN SỰ ĐANG XEM (HOẶC ĐƯỢC CHỌN) BỊ VẮNG TRONG CA NÀY
-                      // Nếu chọn xem "all", chỉ đỏ khi ca hoàn toàn không có ai trực (0 người)
-                      const hasAbsence = filterUserId === "all" ? (presentCount === 0) : Boolean(isTargetAbsent);
-                      const hasPending = filterUserId === "all" ? (pendingInSlot.length > 0) : Boolean(isTargetPending);
+                      const presentCount = presentInSlot.length;
                       const eventsInThisSlot = events.filter(
                         (e) =>
                           (!e.shift_id || e.shift_id === 0 || e.shift_id === shift.id) &&
@@ -1894,15 +1830,15 @@ export function SchedulePage() {
                           }}
                         >
                           <div
-                            className={`schedule-slot-card ${hasAbsence ? "has-absence" : hasPending ? "has-pending" : ""} ${day.isToday ? "is-today" : ""}`}
+                            className={`schedule-slot-card ${isTargetPresent ? "is-present" : ""} ${day.isToday ? "is-today" : ""}`}
                             onClick={() => openRosterModal(shift, day)}
-                            title={
-                              absentCount > 0
-                                ? `Có mặt: ${presentCount}/${slotTotal} người (${absentCount} người vắng mặt) • Bấm để xem danh sách & điểm danh`
-                                : `Bấm để xem danh sách ${slotTotal} thành viên & điểm danh`
-                            }
+                            style={{
+                              border: isTargetPresent ? "1.5px solid #86efac" : "1px solid #e2e8f0",
+                              background: isTargetPresent ? "#f0fdf4" : undefined,
+                            }}
+                            title={`Đã có mặt: ${presentCount}/${slotTotal} người • Bấm để xem danh sách & điểm danh`}
                           >
-                            {/* Dòng 1: Đội ngũ & Nút thao tác nhanh (luôn ghi ngang cố định, nút hover nổi tuyệt đối không chiếm diện tích) */}
+                            {/* Dòng 1: Đội ngũ & Nút điểm danh nhanh */}
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 22, position: "relative", width: "100%" }}>
                               <div
                                 style={{
@@ -1911,129 +1847,80 @@ export function SchedulePage() {
                                   gap: 4.5,
                                   fontSize: 11,
                                   fontWeight: 700,
-                                  color: isTargetAbsent ? "#dc2626" : "#1e293b",
+                                  color: presentCount > 0 ? "#16a34a" : "#64748b",
                                   whiteSpace: "nowrap",
                                   flexShrink: 0,
                                 }}
                               >
                                 <Users
                                   size={13}
-                                  color={isTargetAbsent ? "#dc2626" : "#2563eb"}
+                                  color={presentCount > 0 ? "#16a34a" : "#94a3b8"}
                                   style={{ flexShrink: 0 }}
                                 />
-                                <span style={{ whiteSpace: "nowrap" }}>{slotTotal > 0 ? `${presentCount} người` : "Điểm danh"}</span>
-                                {filterUserId === "all" && absentCount > 0 && (
-                                  <span
-                                    style={{
-                                      fontSize: 9.5,
-                                      color: isTargetAbsent ? "#b91c1c" : "#64748b",
-                                      background: isTargetAbsent ? "#fee2e2" : "#f1f5f9",
-                                      border: `1px solid ${isTargetAbsent ? "#fca5a5" : "#e2e8f0"}`,
-                                      padding: "1px 5px",
-                                      borderRadius: 4,
-                                      fontWeight: 600,
-                                      whiteSpace: "nowrap",
-                                      flexShrink: 0,
-                                    }}
-                                    title={`Có ${absentCount} người vắng mặt trong ca này`}
-                                  >
-                                    ({absentCount} vắng)
-                                  </span>
-                                )}
+                                <span style={{ whiteSpace: "nowrap" }}>{presentCount}/{slotTotal} có mặt</span>
                               </div>
 
-                              {/* Hover Quick Actions */}
+                              {/* Hover Quick Actions: Báo có mặt / Hủy có mặt */}
                               <div
                                 className="schedule-cell-actions"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                {(() => {
-                                  if (isTargetPending) {
-                                    return (
+                                {isTargetPresent ? (
+                                  <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                                    <span
+                                      style={{
+                                        background: "#dcfce7",
+                                        border: "1px solid #86efac",
+                                        borderRadius: 4,
+                                        padding: "2px 5px",
+                                        fontSize: 9,
+                                        fontWeight: 700,
+                                        color: "#166534",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      🟢 Có mặt
+                                    </span>
+                                    {(isAdmin || effectiveUser?.id === user?.id) && (
                                       <button
-                                        onClick={() => handleCancelAbsence(shift.id, day.dateStr, effectiveUser?.id)}
+                                        onClick={() => handleCancelCheckIn(shift.id, day.dateStr, effectiveUser?.id, effectiveUser?.full_name)}
                                         style={{
-                                          background: "#fef3c7",
-                                          border: "1px solid #fde68a",
+                                          background: "#fee2e2",
+                                          border: "1px solid #fca5a5",
                                           borderRadius: 4,
-                                          padding: "2px 6px",
-                                          fontSize: 9.5,
+                                          padding: "2px 5px",
+                                          fontSize: 9,
                                           fontWeight: 700,
-                                          color: "#92400e",
+                                          color: "#991b1b",
                                           cursor: "pointer",
                                           whiteSpace: "nowrap",
                                         }}
-                                        title="Đơn vắng đang chờ Quản lý duyệt. Nhấn để hủy đơn và có mặt lại."
+                                        title="Hủy có mặt (chuyển về chưa điểm danh)"
                                       >
-                                        🟡 Chờ duyệt
+                                        ✕
                                       </button>
-                                    );
-                                  }
-                                  if (isTargetAbsent) {
-                                    const isClassConflict = targetRegInSlot?.absence_reason?.includes("lịch học") || targetRegInSlot?.time_note?.includes("Trùng TKB");
-                                    const shiftDurLabel = "-1.5h KPI";
-                                    return (
-                                      <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
-                                        <span
-                                          style={{
-                                            background: isClassConflict ? "#f5f3ff" : "#fee2e2",
-                                            border: `1px solid ${isClassConflict ? "#c4b5fd" : "#fca5a5"}`,
-                                            borderRadius: 4,
-                                            padding: "2px 5px",
-                                            fontSize: 9,
-                                            fontWeight: 700,
-                                            color: isClassConflict ? "#6d28d9" : "#991b1b",
-                                            whiteSpace: "nowrap",
-                                          }}
-                                          title={targetRegInSlot?.absence_reason ? `Lý do: ${targetRegInSlot.absence_reason}` : "Đã trừ KPI ca này"}
-                                        >
-                                          {isClassConflict ? `🎓 Trùng TKB (${shiftDurLabel})` : `🔴 Đã nghỉ (${shiftDurLabel})`}
-                                        </span>
-                                        {(isAdmin || effectiveUser?.id === user?.id) && (
-                                          <button
-                                            onClick={() => handleCancelAbsence(shift.id, day.dateStr, effectiveUser?.id)}
-                                            style={{
-                                              background: "#dcfce7",
-                                              border: "1px solid #86efac",
-                                              borderRadius: 4,
-                                              padding: "2px 5px",
-                                              fontSize: 9,
-                                              fontWeight: 700,
-                                              color: "#166534",
-                                              cursor: "pointer",
-                                              whiteSpace: "nowrap",
-                                            }}
-                                            title="Khôi phục có mặt lại"
-                                          >
-                                            🔄
-                                          </button>
-                                        )}
-                                      </div>
-                                    );
-                                  }
-                                  if (day.dateStr < todayStr) {
-                                    return null;
-                                  }
-                                  return (
-                                    <button
-                                      onClick={() => openReportAbsence(shift, day, effectiveUser)}
-                                      style={{
-                                        background: "#fee2e2",
-                                        border: "1px solid #fca5a5",
-                                        borderRadius: 4,
-                                        padding: "2px 6px",
-                                        fontSize: 9.5,
-                                        fontWeight: 700,
-                                        color: "#b91c1c",
-                                        cursor: "pointer",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                      title={effectiveUser?.id === user?.id ? "Báo vắng ca này" : `Báo vắng ca này cho ${effectiveUser?.full_name || effectiveUser?.username}`}
-                                    >
-                                      Báo vắng
-                                    </button>
-                                  );
-                                })()}
+                                    )}
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => handleCheckIn(shift.id, day.dateStr, effectiveUser?.id, effectiveUser?.full_name)}
+                                    style={{
+                                      background: "#16a34a",
+                                      border: "none",
+                                      borderRadius: 4,
+                                      padding: "2px 6px",
+                                      fontSize: 9.5,
+                                      fontWeight: 800,
+                                      color: "#ffffff",
+                                      cursor: "pointer",
+                                      whiteSpace: "nowrap",
+                                      boxShadow: "0 1px 3px rgba(22, 163, 74, 0.3)",
+                                    }}
+                                    title={effectiveUser?.id === user?.id ? "Bấm để điểm danh có mặt ca này" : `Điểm danh có mặt cho ${effectiveUser?.full_name || effectiveUser?.username}`}
+                                  >
+                                    🟢 Báo có mặt
+                                  </button>
+                                )}
                                 {isAdmin && (
                                   <button
                                     onClick={() => openCreateEventModal(shift.id, day.dateStr)}
@@ -2078,35 +1965,37 @@ export function SchedulePage() {
                               </div>
                             )}
 
-                            {/* Expanded details (absent list) */}
-                            {isExpanded && absentInSlot.length > 0 && (
-                              <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3, borderTop: "1px dashed #fda4af", paddingTop: 4 }}>
-                                {absentInSlot.map((a) => (
-                                  <div
-                                    key={a.id}
-                                    style={{
-                                      fontSize: 10,
-                                      color: "#b91c1c",
-                                      background: "#fee2e2",
-                                      padding: "2px 6px",
-                                      borderRadius: 4,
-                                      fontWeight: 600,
-                                      display: "flex",
-                                      alignItems: "center",
-                                      justifyContent: "space-between",
-                                      gap: 4,
-                                    }}
-                                  >
-                                    <span>🔴 {a.full_name || a.username}</span>
-                                    <span style={{ fontSize: 9, fontStyle: "italic", opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 }}>
-                                      {a.absence_reason || "Vắng mặt"}
-                                    </span>
+                            {/* Expanded details (present list) */}
+                            {isExpanded && (
+                              <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3, borderTop: "1px dashed #bbf7d0", paddingTop: 4 }}>
+                                {presentInSlot.length > 0 ? (
+                                  presentInSlot.map((p) => (
+                                    <div
+                                      key={p.id}
+                                      style={{
+                                        fontSize: 10,
+                                        color: "#166534",
+                                        background: "#f0fdf4",
+                                        padding: "2px 6px",
+                                        borderRadius: 4,
+                                        fontWeight: 600,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: 4,
+                                      }}
+                                    >
+                                      <span>🟢 {p.full_name || p.username}</span>
+                                      <span style={{ fontSize: 9, fontStyle: "italic", opacity: 0.85 }}>Đã có mặt</span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div style={{ fontSize: 9.5, color: "#94a3b8", fontStyle: "italic" }}>
+                                    Chưa ai điểm danh
                                   </div>
-                                ))}
+                                )}
                               </div>
                             )}
-
-                            {/* Expanded details: only absences, no TKB yellow list */}
 
                             {/* Events list: ONLY rendered when events actually exist! */}
                             {eventsInThisSlot.length > 0 && (
@@ -2243,33 +2132,12 @@ export function SchedulePage() {
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span>Xem danh sách thành viên trong từng ca trực (Thứ 2 đến Thứ 7, Chủ nhật nghỉ).</span>
                 <span style={{ background: "#eff6ff", color: "#1d4ed8", padding: "1px 8px", borderRadius: 10, fontWeight: 600, fontSize: 11 }}>
-                  💡 KPI 20h là tổng lũy kế cả tuần (Thứ 2 - Thứ 7, ~3.3h/ngày), không phải mỗi ngày 20 tiếng
+                  💡 KPI 20h là tổng lũy kế cả tuần (bắt đầu từ 0h, mỗi ca có mặt sẽ cộng 1.5h), không phải mỗi ngày 20 tiếng
                 </span>
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {(isAdmin || currentDate >= todayStr) && (
-                <button
-                  onClick={() => {
-                    setBulkAbsenceDate(currentDate);
-                    setBulkAbsenceMode("restore");
-                    setShowBulkAbsenceModal(true);
-                  }}
-                  className="btn btn-sm"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    background: "#f0fdf4",
-                    border: "1px solid #86efac",
-                    color: "#166534",
-                    fontWeight: 700,
-                  }}
-                  title="Khôi phục có mặt cho các ca trong ngày này"
-                >
-                  <RotateCcw size={14} /> Khôi Phục Có Mặt Ngày Này
-                </button>
-              )}
+              
               <button
                 onClick={() => setViewMode("week")}
                 className="btn btn-secondary btn-sm"
@@ -2289,17 +2157,11 @@ export function SchedulePage() {
                 displayDate: `${String(curD.getDate()).padStart(2, "0")}/${String(curD.getMonth() + 1).padStart(2, "0")}`,
                 dayName: curDayNames[curD.getDay()] || "Hôm nay",
               };
-              const absentInShift = schedule.filter(
+              const presentInShift = schedule.filter(
                 (s) =>
                   s.shift_id === shift.id &&
                   s.work_date === currentDate &&
-                  s.attendance_status === "absent"
-              );
-              const pendingInShift = schedule.filter(
-                (s) =>
-                  s.shift_id === shift.id &&
-                  s.work_date === currentDate &&
-                  s.attendance_status === "pending_absence"
+                  s.attendance_status === "present"
               );
               const eventsInShift = events.filter(
                 (e) =>
@@ -2311,10 +2173,7 @@ export function SchedulePage() {
                     (s) => s.shift_id === shift.id && s.work_date === currentDate && s.user_id === activeUserId
                   )
                 : null;
-              const isDayTargetPending = targetDayReg?.attendance_status === "pending_absence";
-              const isDayTargetAbsent = targetDayReg?.attendance_status === "absent";
-              const dayHasAbsence = filterUserId === "all" ? (absentInShift.length >= (totalMembers || 21)) : Boolean(isDayTargetAbsent);
-              const dayHasPending = filterUserId === "all" ? (pendingInShift.length > 0) : Boolean(isDayTargetPending);
+              const isDayTargetCheckedIn = targetDayReg?.attendance_status === "present";
 
               return (
                 <div
@@ -2322,7 +2181,7 @@ export function SchedulePage() {
                   className="card"
                   style={{
                     padding: 16,
-                    borderLeft: dayHasAbsence ? "4px solid #ef4444" : dayHasPending ? "4px solid #f59e0b" : "4px solid #3b82f6",
+                    borderLeft: isDayTargetCheckedIn ? "4px solid #16a34a" : "4px solid #3b82f6",
                   }}
                 >
                   <div
@@ -2365,72 +2224,60 @@ export function SchedulePage() {
 
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {(() => {
-                        if (isDayTargetPending) {
+                        if (isDayTargetCheckedIn) {
                           return (
-                            <button
-                              onClick={() => handleCancelAbsence(shift.id, currentDate, effectiveUser?.id)}
-                              style={{
-                                background: "#fef3c7",
-                                border: "1px solid #fde68a",
-                                color: "#92400e",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontWeight: 700,
-                                fontSize: 12,
-                                cursor: "pointer",
-                              }}
-                              title="Đơn báo vắng đang chờ Quản lý duyệt. Nhấn để hủy đơn và có mặt lại."
-                            >
-                              🟡 Chờ Duyệt (Hủy Đơn)
-                            </button>
-                          );
-                        }
-                        if (isDayTargetAbsent) {
-                          if (currentDate < todayStr) {
-                            return (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                               <span
                                 style={{
-                                  background: "#fee2e2",
-                                  border: "1px solid #fca5a5",
-                                  color: "#991b1b",
+                                  background: "#dcfce7",
+                                  border: "1px solid #86efac",
+                                  color: "#166534",
                                   borderRadius: 6,
                                   padding: "6px 12px",
                                   fontWeight: 700,
                                   fontSize: 12,
                                 }}
                               >
-                                🔴 Đã nghỉ
+                                ✓ Đã có mặt
                               </span>
-                            );
-                          }
-                          return (
-                            <button
-                              onClick={() => handleCancelAbsence(shift.id, currentDate, effectiveUser?.id)}
-                              className="btn btn-primary btn-sm"
-                              title="Đã duyệt vắng mặt. Nhấn để xác nhận có mặt lại."
-                            >
-                              Xác Nhận Có Mặt Lại
-                            </button>
+                              {(isAdmin || effectiveUser?.id === user?.id) && (
+                                <button
+                                  onClick={() => handleCancelCheckIn(shift.id, currentDate, effectiveUser?.id, effectiveUser?.full_name)}
+                                  style={{
+                                    background: "#fee2e2",
+                                    border: "1px solid #fca5a5",
+                                    color: "#991b1b",
+                                    borderRadius: 6,
+                                    padding: "6px 12px",
+                                    fontWeight: 700,
+                                    fontSize: 12,
+                                    cursor: "pointer",
+                                  }}
+                                  title="Hủy có mặt (chuyển về chưa điểm danh)"
+                                >
+                                  Hủy có mặt
+                                </button>
+                              )}
+                            </div>
                           );
-                        }
-                        if (currentDate < todayStr) {
-                          return null;
                         }
                         return (
                           <button
-                            onClick={() => openReportAbsence(shift, dayObj, effectiveUser)}
+                            onClick={() => handleCheckIn(shift.id, currentDate, effectiveUser?.id, effectiveUser?.full_name)}
                             style={{
-                              background: "#fee2e2",
-                              border: "1px solid #fca5a5",
-                              color: "#b91c1c",
+                              background: "#16a34a",
+                              border: "none",
+                              color: "#ffffff",
                               borderRadius: 6,
-                              padding: "6px 12px",
-                              fontWeight: 700,
+                              padding: "6px 14px",
+                              fontWeight: 800,
                               fontSize: 12,
                               cursor: "pointer",
+                              boxShadow: "0 2px 4px rgba(22, 163, 74, 0.25)",
                             }}
+                            title={effectiveUser?.id === user?.id ? "Báo có mặt ca này" : `Điểm danh có mặt cho ${effectiveUser?.full_name || effectiveUser?.username}`}
                           >
-                            Báo Vắng Ca Này
+                            🟢 Báo có mặt
                           </button>
                         );
                       })()}
@@ -2439,7 +2286,7 @@ export function SchedulePage() {
                         className="btn btn-primary btn-sm"
                         style={{ display: "flex", alignItems: "center", gap: 6 }}
                       >
-                        <Users size={14} /> {totalMembers > 0 ? `Xem ${Math.max(0, totalMembers - absentInShift.length)}/${totalMembers} Người (Điểm danh)` : "Điểm danh"}
+                        <Users size={14} /> {totalMembers > 0 ? `Xem ${presentInShift.length}/${totalMembers} Đã điểm danh (Chi tiết)` : "Điểm danh"}
                       </button>
                     </div>
                   </div>
@@ -2447,38 +2294,15 @@ export function SchedulePage() {
                   {/* Summary row */}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>
-                      👥 Đội ngũ: <strong>{Math.max(0, totalMembers - absentInShift.length)} người có mặt</strong> ({Math.max(0, totalMembers - absentInShift.length)}/{totalMembers}) •{" "}
-                      {isAdmin ? (
-                        <>
-                          {absentInShift.length > 0 ? (
-                            <span style={{ color: "#dc2626", fontWeight: 700 }}>
-                              🔴 {absentInShift.length} người vắng mặt
-                            </span>
-                          ) : (
-                            <span style={{ color: "#16a34a", fontWeight: 700 }}>
-                              🟢 Đủ {totalMembers} người có mặt
-                            </span>
-                          )}
-                          {pendingInShift.length > 0 && (
-                            <span style={{ color: "#d97706", fontWeight: 700, marginLeft: 8 }}>
-                              • 🟡 {pendingInShift.length} chờ duyệt vắng
-                            </span>
-                          )}
-                        </>
+                      👥 Đội ngũ: <strong>{presentInShift.length}/{totalMembers} người đã điểm danh có mặt</strong> •{" "}
+                      {isDayTargetCheckedIn ? (
+                        <span style={{ color: "#16a34a", fontWeight: 700 }}>
+                          🟢 Đã điểm danh có mặt (+1.5h KPI)
+                        </span>
                       ) : (
-                        isMyAbsentInDay ? (
-                          <span style={{ color: "#dc2626", fontWeight: 700 }}>
-                            🔴 Bạn đã được duyệt nghỉ ca này
-                          </span>
-                        ) : isMyPendingInDay ? (
-                          <span style={{ color: "#d97706", fontWeight: 700 }}>
-                            🟡 Đơn xin vắng của bạn đang chờ duyệt
-                          </span>
-                        ) : (
-                          <span style={{ color: "#16a34a", fontWeight: 700 }}>
-                            🟢 Bạn có mặt trong ca này
-                          </span>
-                        )
+                        <span style={{ color: "#64748b", fontWeight: 600 }}>
+                          ⚪ Chưa điểm danh
+                        </span>
                       )}
                     </div>
                     <div style={{ fontSize: 12, color: "#64748b" }}>
@@ -2486,37 +2310,18 @@ export function SchedulePage() {
                     </div>
                   </div>
 
-                  {/* Hiển thị chi tiết danh tính người vắng trong ca (Chỉ cho Quản lý) */}
-                  {isAdmin && (absentInShift.length > 0 || pendingInShift.length > 0) && (
-                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: "1px dashed #fecaca" }}>
-                      {absentInShift.map((a) => (
-                        <span
-                          key={a.id}
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 700,
-                            background: "#fee2e2",
-                            color: "#991b1b",
-                            border: "1px solid #fca5a5",
-                            padding: "3px 8px",
-                            borderRadius: 6,
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                          }}
-                        >
-                          🔴 {a.full_name || a.username} vắng: "{a.absence_reason || "Đã duyệt nghỉ"}"
-                        </span>
-                      ))}
-                      {pendingInShift.map((p) => (
+                  {/* Hiển thị chi tiết những người đã điểm danh có mặt trong ca */}
+                  {presentInShift.length > 0 && (
+                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 8, borderTop: "1px dashed #bbf7d0" }}>
+                      {presentInShift.map((p) => (
                         <span
                           key={p.id}
                           style={{
                             fontSize: 11,
                             fontWeight: 700,
-                            background: "#fef3c7",
-                            color: "#92400e",
-                            border: "1px solid #fde68a",
+                            background: "#dcfce7",
+                            color: "#166534",
+                            border: "1px solid #86efac",
                             padding: "3px 8px",
                             borderRadius: 6,
                             display: "inline-flex",
@@ -2524,7 +2329,7 @@ export function SchedulePage() {
                             gap: 4,
                           }}
                         >
-                          🟡 {p.full_name || p.username} xin vắng: "{p.absence_reason || "Đang xin nghỉ"}" (Chờ duyệt)
+                          🟢 {p.full_name || p.username} đã có mặt
                         </span>
                       ))}
                     </div>
@@ -2559,8 +2364,7 @@ export function SchedulePage() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {myShiftsInWeek.map((shift) => {
-                const isAbsent = shift.attendance_status === "absent";
-                const isPending = shift.attendance_status === "pending_absence";
+                const isPresent = shift.attendance_status === "present";
                 return (
                   <div
                     key={shift.id}
@@ -2570,8 +2374,8 @@ export function SchedulePage() {
                       justifyContent: "space-between",
                       padding: 14,
                       borderRadius: 10,
-                      background: isAbsent ? "#fef2f2" : isPending ? "#fffbeb" : "#f8fafc",
-                      border: isAbsent ? "1.5px solid #ef4444" : isPending ? "1.5px solid #f59e0b" : "1px solid #e2e8f0",
+                      background: isPresent ? "#f0fdf4" : "#f8fafc",
+                      border: isPresent ? "1.5px solid #86efac" : "1px solid #e2e8f0",
                     }}
                   >
                     <div>
@@ -2579,7 +2383,7 @@ export function SchedulePage() {
                         style={{
                           fontWeight: 700,
                           fontSize: 14,
-                          color: isAbsent ? "#991b1b" : isPending ? "#b45309" : "#0f172a",
+                          color: isPresent ? "#15803d" : "#0f172a",
                           display: "flex",
                           alignItems: "center",
                           gap: 8,
@@ -2588,44 +2392,31 @@ export function SchedulePage() {
                         <span>
                           {shift.shift_name} ({shift.shift_label})
                         </span>
-                        {isAbsent ? (
-                          <span
-                            style={{
-                              fontSize: 11,
-                              fontWeight: 800,
-                              background: "#ef4444",
-                              color: "#fff",
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                            }}
-                          >
-                            🔴 VẮNG MẶT (ĐÃ DUYỆT)
-                          </span>
-                        ) : isPending ? (
-                          <span
-                            style={{
-                              fontSize: 11,
-                              fontWeight: 800,
-                              background: "#f59e0b",
-                              color: "#fff",
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                            }}
-                          >
-                            🟡 ĐƠN CHỜ QUẢN LÝ DUYỆT
-                          </span>
-                        ) : (
+                        {isPresent ? (
                           <span
                             style={{
                               fontSize: 11,
                               fontWeight: 700,
                               background: "#dcfce7",
                               color: "#166534",
-                              padding: "1px 6px",
+                              padding: "2px 8px",
                               borderRadius: 4,
                             }}
                           >
-                            🟢 Có mặt
+                            🟢 Đã có mặt (+1.5h KPI)
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              background: "#f1f5f9",
+                              color: "#64748b",
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                            }}
+                          >
+                            ⚪ Chưa điểm danh
                           </span>
                         )}
                       </div>
@@ -2633,71 +2424,62 @@ export function SchedulePage() {
                         Ngày làm: <strong>{shift.work_date}</strong> • Ghi chú:{" "}
                         {shift.note || "Không có"}
                       </div>
-                      {(isAbsent || isPending) && shift.absence_reason && (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: isAbsent ? "#991b1b" : "#b45309",
-                            fontStyle: "italic",
-                            marginTop: 3,
-                          }}
-                        >
-                          Lý do xin vắng: "{shift.absence_reason}"
-                        </div>
-                      )}
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {isAbsent ? (
-                        (shift.work_date >= todayStr || isAdmin) ? (
-                          <button
-                            onClick={() => handleCancelAbsence(shift.shift_id, shift.work_date, user?.id)}
-                            className="btn btn-primary btn-sm"
+                      {shift.attendance_status === "present" ? (
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span
+                            style={{
+                              background: "#dcfce7",
+                              border: "1px solid #86efac",
+                              color: "#166534",
+                              borderRadius: 6,
+                              padding: "5px 10px",
+                              fontWeight: 700,
+                              fontSize: 12,
+                            }}
                           >
-                            Xác Nhận Có Mặt Lại
-                          </button>
-                        ) : (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "#991b1b" }}>Đã nghỉ</span>
-                        )
-                      ) : isPending ? (
+                            ✓ Đã có mặt
+                          </span>
+                          {(shift.work_date >= todayStr || isAdmin) && (
+                            <button
+                              onClick={() => handleCancelCheckIn(shift.shift_id, shift.work_date, user?.id, user?.full_name)}
+                              style={{
+                                background: "#fee2e2",
+                                border: "1px solid #fca5a5",
+                                color: "#991b1b",
+                                borderRadius: 6,
+                                padding: "5px 10px",
+                                fontWeight: 700,
+                                fontSize: 12,
+                                cursor: "pointer",
+                              }}
+                              title="Hủy có mặt (chuyển về chưa điểm danh)"
+                            >
+                              Hủy có mặt
+                            </button>
+                          )}
+                        </div>
+                      ) : (
                         <button
-                          onClick={() => handleCancelAbsence(shift.shift_id, shift.work_date, user?.id)}
+                          onClick={() => handleCheckIn(shift.shift_id, shift.work_date, user?.id, user?.full_name)}
                           style={{
-                            background: "#fef3c7",
-                            border: "1px solid #fde68a",
-                            color: "#92400e",
+                            background: "#16a34a",
+                            border: "none",
+                            color: "#ffffff",
                             borderRadius: 6,
                             padding: "6px 12px",
-                            fontWeight: 700,
+                            fontWeight: 800,
                             fontSize: 12,
                             cursor: "pointer",
+                            boxShadow: "0 2px 4px rgba(22, 163, 74, 0.25)",
                           }}
-                          title="Hủy đơn xin nghỉ này và xác nhận có mặt lại"
+                          title="Báo có mặt ca này"
                         >
-                          Hủy Đơn Vắng
+                          🟢 Báo có mặt
                         </button>
-                      ) : shift.work_date >= todayStr ? (
-                        <button
-                          onClick={() =>
-                            openReportAbsence(
-                              { id: shift.shift_id, name: shift.shift_name, label: shift.shift_label },
-                              { dateStr: shift.work_date }
-                            )
-                          }
-                          style={{
-                            background: "#fee2e2",
-                            border: "1px solid #fca5a5",
-                            color: "#b91c1c",
-                            borderRadius: 6,
-                            padding: "6px 12px",
-                            fontWeight: 700,
-                            fontSize: 12,
-                            cursor: "pointer",
-                          }}
-                        >
-                          Báo Vắng Ca
-                        </button>
-                      ) : null}
+                      )}
                     </div>
                   </div>
                 );
@@ -2748,11 +2530,10 @@ export function SchedulePage() {
             >
               <div>
                 <h3 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: "#0f172a" }}>
-                  Danh Sách Thành Viên Ca Trực ({(() => {
+                  Danh Sách Điểm Danh Ca Trực ({(() => {
                     const total = rosterModal.rosterList.length || totalMembers;
-                    const absent = rosterModal.rosterList.filter(m => m.attendance_status === 'absent').length;
-                    const present = Math.max(0, total - absent);
-                    return `${present}/${total} Người Có Mặt`;
+                    const present = rosterModal.rosterList.filter(m => m.attendance_status === 'present').length;
+                    return `${present}/${total} Người Đã Có Mặt`;
                   })()})
                 </h3>
                 <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
@@ -2778,26 +2559,22 @@ export function SchedulePage() {
             {/* Notification guideline */}
             <div
               style={{
-                background: "#eff6ff",
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
                 padding: "10px 14px",
                 borderRadius: 8,
                 fontSize: 12,
-                color: "#1e40af",
+                color: "#166534",
                 marginBottom: 16,
               }}
             >
               {(() => {
                 const total = rosterModal.rosterList.length || totalMembers;
-                const absent = rosterModal.rosterList.filter(m => m.attendance_status === 'absent').length;
-                const present = Math.max(0, total - absent);
+                const present = rosterModal.rosterList.filter(m => m.attendance_status === 'present').length;
                 return (
                   <>
-                    💡 <strong>Điểm danh ca trực:</strong> Hiện có <strong>{present}/{total} người có mặt</strong>
-                    {absent > 0 ? (
-                      <span style={{ color: "#dc2626", fontWeight: 700 }}> (⚠️ {absent} người vắng mặt)</span>
-                    ) : (
-                      <span style={{ color: "#16a34a", fontWeight: 700 }}> (đầy đủ tất cả thành viên)</span>
-                    )}.
+                    💡 <strong>Điểm danh ca trực:</strong> Hiện có <strong>{present}/{total} người đã điểm danh có mặt</strong>.
+                    {present === 0 ? " Nhấn '🟢 Điểm danh có mặt' khi vào ca để tích lũy +1.5h KPI." : ""}
                   </>
                 );
               })()}
@@ -2812,9 +2589,7 @@ export function SchedulePage() {
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {rosterModal.rosterList.map((m, idx) => {
                   const isMe = m.user_id === user?.id;
-                  const isPending = m.attendance_status === "pending_absence";
-                  const isAbsent = m.attendance_status === "absent";
-                  const isPresent = !isPending && !isAbsent;
+                  const isPresent = m.attendance_status === "present";
                   const memberConflict = classConflicts.find(
                     (c) =>
                       c.shift_id === rosterModal.shift?.id &&
@@ -2841,35 +2616,11 @@ export function SchedulePage() {
                   }
 
                   const isTkb = Boolean(tkbLabel);
-
-                  let cardBg = "#ffffff";
-                  let cardBorder = "1px solid #e2e8f0";
-                  let cardShadow = "none";
-                  let avatarBg = "#dbeafe";
-                  let avatarColor = "#1d4ed8";
-
-                  if (isTkb) {
-                    // Đăng ký TKB lịch học -> khung đỏ bỰ (giống vắng)
-                    cardBg = "#fef2f2";
-                    cardBorder = "3px solid #ef4444";
-                    cardShadow = "0 4px 16px rgba(239, 68, 68, 0.25)";
-                    avatarBg = "#fee2e2";
-                    avatarColor = "#dc2626";
-                  } else if (isPending) {
-                    // Báo vắng chờ duyệt -> khung cam bự
-                    cardBg = "#fff1f2";
-                    cardBorder = "3px solid #f97316";
-                    cardShadow = "0 4px 16px rgba(249, 115, 22, 0.25)";
-                    avatarBg = "#ffedd5";
-                    avatarColor = "#c2410c";
-                  } else if (isAbsent) {
-                    // Vắng mặt đã duyệt -> khung đỏ BỰ rõ ràng
-                    cardBg = "#fef2f2";
-                    cardBorder = "3px solid #ef4444";
-                    cardShadow = "0 4px 16px rgba(239, 68, 68, 0.30)";
-                    avatarBg = "#fee2e2";
-                    avatarColor = "#dc2626";
-                  }
+                  const cardBg = isPresent ? "#f0fdf4" : "#ffffff";
+                  const cardBorder = isPresent ? "1.5px solid #86efac" : "1px solid #e2e8f0";
+                  const cardShadow = isPresent ? "0 2px 8px rgba(34, 197, 94, 0.12)" : "none";
+                  const avatarBg = isPresent ? "#dcfce7" : "#f1f5f9";
+                  const avatarColor = isPresent ? "#15803d" : "#64748b";
 
                   return (
                     <div
@@ -2914,7 +2665,7 @@ export function SchedulePage() {
                               style={{
                                 fontWeight: 700,
                                 fontSize: 13,
-                                color: (isAbsent || isTkb) ? "#991b1b" : isPending ? "#92400e" : "#0f172a",
+                                color: isPresent ? "#15803d" : "#0f172a",
                                 display: "flex",
                                 alignItems: "center",
                                 gap: 6,
@@ -2925,29 +2676,28 @@ export function SchedulePage() {
                                 {m.full_name} {isMe && "(Tôi)"}
                               </span>
 
-                              {/* 1. Badge Trùng TKB - đỏ */}
+                              {/* 1. Badge Trùng TKB */}
                               {isTkb && (
                                 <span
                                   style={{
                                     fontSize: 11,
                                     fontWeight: 700,
-                                    background: "#ef4444",
-                                    color: "#ffffff",
-                                    border: "none",
+                                    background: "#fef3c7",
+                                    color: "#b45309",
+                                    border: "1px solid #fde68a",
                                     padding: "2px 8px",
                                     borderRadius: 6,
                                     display: "inline-flex",
                                     alignItems: "center",
                                     gap: 4,
-                                    boxShadow: "0 1px 3px rgba(239,68,68,0.3)",
                                   }}
                                 >
                                   {tkbLabel}
                                 </span>
                               )}
 
-                              {/* 2. Badge Trạng thái Có Mặt */}
-                              {(isTkb || isPresent) && (
+                              {/* 2. Badge Trạng thái Có Mặt / Chưa Điểm Danh */}
+                              {isPresent ? (
                                 <span
                                   style={{
                                     fontSize: 11,
@@ -2961,54 +2711,27 @@ export function SchedulePage() {
                                     gap: 4,
                                   }}
                                 >
-                                  🟢 Có mặt
+                                  🟢 Đã có mặt (+1.5h KPI)
+                                </span>
+                              ) : (
+                                <span
+                                  style={{
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    background: "#f1f5f9",
+                                    color: "#64748b",
+                                    padding: "2px 8px",
+                                    borderRadius: 6,
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                  }}
+                                >
+                                  ⚪ Chưa điểm danh (0h)
                                 </span>
                               )}
 
-                              {!isTkb && isPending && (
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    fontWeight: 800,
-                                    background: "#f59e0b",
-                                    color: "#ffffff",
-                                    padding: "2px 8px",
-                                    borderRadius: 4,
-                                  }}
-                                >
-                                  🟡 ĐƠN CHỜ QUẢN LÝ DUYỆT
-                                </span>
-                              )}
-                              {!isTkb && isAbsent && (
-                                <>
-                                  <span
-                                    style={{
-                                      fontSize: 10,
-                                      fontWeight: 800,
-                                      background: "#ef4444",
-                                      color: "#ffffff",
-                                      padding: "2px 8px",
-                                      borderRadius: 4,
-                                    }}
-                                  >
-                                    🔴 VẮNG MẶT (QUẢN LÝ ĐÃ DUYỆT)
-                                  </span>
-                                  <span
-                                    style={{
-                                      fontSize: 10,
-                                      fontWeight: 800,
-                                      background: "#fee2e2",
-                                      color: "#991b1b",
-                                      border: "1px solid #fca5a5",
-                                      padding: "2px 8px",
-                                      borderRadius: 4,
-                                    }}
-                                  >
-                                    ⏱️ 0h / 1.5h (-1.5h KPI)
-                                  </span>
-                                </>
-                              )}
-                              {isPresent && !isTkb && m.actual_hours !== null && m.actual_hours !== undefined && (
+                              {isPresent && m.actual_hours !== null && m.actual_hours !== undefined && (
                                 <span
                                   style={{
                                     fontSize: 10,
@@ -3030,266 +2753,108 @@ export function SchedulePage() {
                             </div>
                             <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
                               {m.department || "Tổ Trực Kỹ Thuật"} • {m.phone || m.email || "0364560410"}
-                              {!isTkb && m.absence_reason && (
-                                <div style={{ color: "#dc2626", fontWeight: 700, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
-                                  ⚠️ <span>Lý do vắng: {m.absence_reason}</span>
-                                </div>
-                              )}
-                              {!isTkb && m.time_note && (!m.absence_reason || !m.absence_reason.includes(m.time_note)) && (
-                                <div style={{ color: "#d97706", fontWeight: 700, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
-                                  💬 <span>Ghi chú giờ: {m.time_note}</span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         </div>
 
-                        {/* Action buttons based on Role */}
+                        {/* Action buttons */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {/* 1. If Staff is current logged-in user and PRESENT -> button to report absence */}
-                          {isMe && isPresent && rosterModal.day?.dateStr >= todayStr && (
-                            <button
-                              onClick={() =>
-                                openReportAbsence(rosterModal.shift, rosterModal.day, m)
-                              }
-                              style={{
-                                background: "#fee2e2",
-                                border: "1px solid #fca5a5",
-                                color: "#b91c1c",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 12,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                            >
-                              📝 Báo vắng ca này
-                            </button>
-                          )}
-
-                          {/* 1b. If Admin and user is PRESENT -> button to Mark Absent / Missed Shift */}
-                          {isStrictAdmin && isPresent && (
-                            <button
-                              onClick={() => handleAdminMarkAbsent(m)}
-                              style={{
-                                background: "#fff1f2",
-                                border: "1px solid #fecaca",
-                                color: "#b91c1c",
-                                borderRadius: 6,
-                                padding: "5px 10px",
-                                fontSize: 11,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                              title="Đánh dấu nhân viên này không đi làm / bỏ ca trực (sẽ trừ KPI)"
-                            >
-                              ❌ Đánh dấu vắng
-                            </button>
-                          )}
-                          {isAdmin && isPresent && (
-                            <button
-                              type="button"
-                              onClick={() => openEditHours(m)}
-                              style={{
-                                background: "#eff6ff",
-                                border: "1px solid #bfdbfe",
-                                color: "#1d4ed8",
-                                borderRadius: 6,
-                                padding: "5px 10px",
-                                fontSize: 11,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                              }}
-                              title="Chỉnh sửa số giờ làm thực tế nếu nhân viên đi muộn, về sớm hoặc làm thiếu giờ"
-                            >
-                              ⏱️ Chỉnh giờ làm
-                            </button>
-                          )}
-
-                          {/* 2. If Staff has PENDING request */}
-                          {isPending && (
-                            <>
-                              {/* Manager: Approve or Reject buttons - CHỈ ADMIN MỚI ĐƯỢC DUYỆT VẮNG */}
-                              {isStrictAdmin ? (
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <button
-                                    onClick={() =>
-                                      handleApproveAbsence(
-                                        rosterModal.shift.id,
-                                        rosterModal.day.dateStr,
-                                        m.user_id,
-                                        true,
-                                        m.full_name
-                                      )
-                                    }
-                                    style={{
-                                      background: "#10b981",
-                                      border: "none",
-                                      color: "#ffffff",
-                                      borderRadius: 6,
-                                      padding: "5px 12px",
-                                      fontSize: 11,
-                                      fontWeight: 800,
-                                      cursor: "pointer",
-                                      boxShadow: "0 2px 4px rgba(16, 185, 129, 0.3)",
-                                    }}
-                                  >
-                                    ✓ Phê Duyệt Cho Vắng
-                                  </button>
-                                  <button
-                                    onClick={() =>
-                                      handleApproveAbsence(
-                                        rosterModal.shift.id,
-                                        rosterModal.day.dateStr,
-                                        m.user_id,
-                                        false,
-                                        m.full_name
-                                      )
-                                    }
-                                    style={{
-                                      background: "#ffffff",
-                                      border: "1.5px solid #ef4444",
-                                      color: "#ef4444",
-                                      borderRadius: 6,
-                                      padding: "5px 10px",
-                                      fontSize: 11,
-                                      fontWeight: 800,
-                                      cursor: "pointer",
-                                    }}
-                                  >
-                                    ✕ Từ Chối
-                                  </button>
-                                </div>
-                              ) : (
-                                <span style={{ fontSize: 11, fontWeight: 700, color: "#d97706", background: "#fef3c7", padding: "4px 8px", borderRadius: 6, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                  ⏳ Chờ Quản trị viên / Leader duyệt vắng
-                                </span>
-                              )}
-
-                              {/* Staff themselves: Cancel their request */}
-                              {isMe && !isStrictAdmin && (
+                          {isPresent ? (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span
+                                style={{
+                                  background: "#dcfce7",
+                                  border: "1px solid #86efac",
+                                  borderRadius: 6,
+                                  padding: "5px 10px",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  color: "#166534",
+                                }}
+                              >
+                                ✓ Đã có mặt
+                              </span>
+                              {(isAdmin || isMe) && (
                                 <button
                                   onClick={() =>
-                                    handleCancelAbsence(
+                                    handleCancelCheckIn(
                                       rosterModal.shift.id,
                                       rosterModal.day.dateStr,
-                                      m.user_id
+                                      m.user_id,
+                                      m.full_name
                                     )
                                   }
                                   style={{
-                                    background: "#f1f5f9",
-                                    border: "1px solid #cbd5e1",
-                                    color: "#475569",
+                                    background: "#fee2e2",
+                                    border: "1px solid #fca5a5",
+                                    color: "#991b1b",
                                     borderRadius: 6,
-                                    padding: "5px 12px",
+                                    padding: "5px 10px",
                                     fontSize: 11,
                                     fontWeight: 700,
                                     cursor: "pointer",
                                   }}
+                                  title="Hủy có mặt (chuyển về chưa điểm danh)"
                                 >
-                                  ✕ Hủy Yêu Cầu Xin Vắng
+                                  ✕ Hủy có mặt
                                 </button>
                               )}
-
-                              {!isAdmin && !isMe && (
-                                <span style={{ fontSize: 11, color: "#b45309", fontStyle: "italic", fontWeight: 600 }}>
-                                  (Đang chờ duyệt)
+                              {isAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditHours(m)}
+                                  style={{
+                                    background: "#eff6ff",
+                                    border: "1px solid #bfdbfe",
+                                    color: "#1d4ed8",
+                                    borderRadius: 6,
+                                    padding: "5px 10px",
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                  title="Chỉnh sửa số giờ làm thực tế"
+                                >
+                                  ⏱️ Chỉnh giờ
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              {(isAdmin || isMe) ? (
+                                <button
+                                  onClick={() =>
+                                    handleCheckIn(
+                                      rosterModal.shift.id,
+                                      rosterModal.day.dateStr,
+                                      m.user_id,
+                                      m.full_name
+                                    )
+                                  }
+                                  style={{
+                                    background: "#16a34a",
+                                    border: "none",
+                                    color: "#ffffff",
+                                    borderRadius: 6,
+                                    padding: "6px 14px",
+                                    fontSize: 12,
+                                    fontWeight: 800,
+                                    cursor: "pointer",
+                                    boxShadow: "0 2px 4px rgba(22, 163, 74, 0.25)",
+                                  }}
+                                  title={isMe ? "Báo có mặt ca này (+1.5h KPI)" : `Điểm danh có mặt cho ${m.full_name}`}
+                                >
+                                  🟢 Điểm danh có mặt
+                                </button>
+                              ) : (
+                                <span style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>
+                                  Chưa điểm danh
                                 </span>
                               )}
-                            </>
-                          )}
-
-                          {/* 3. If ABSENT (Manager approved) */}
-                          {isAbsent && (
-                            <>
-                              {/* Manager can restore presence */}
-                              {isAdmin && (
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <button
-                                    onClick={() =>
-                                      handleCancelAbsence(
-                                        rosterModal.shift.id,
-                                        rosterModal.day.dateStr,
-                                        m.user_id
-                                      )
-                                    }
-                                    style={{
-                                      background: "#dcfce7",
-                                      border: "1px solid #86efac",
-                                      color: "#166534",
-                                      borderRadius: 6,
-                                      padding: "5px 12px",
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      cursor: "pointer",
-                                    }}
-                                  >
-                                    🔄 Khôi phục Có mặt
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditHours(m)}
-                                    style={{
-                                      background: "#eff6ff",
-                                      border: "1px solid #bfdbfe",
-                                      color: "#1d4ed8",
-                                      borderRadius: 6,
-                                      padding: "5px 10px",
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      cursor: "pointer",
-                                    }}
-                                    title="Chỉnh sửa số giờ làm thực tế nếu nhân viên có đi làm một phần"
-                                  >
-                                    ⏱️ Chỉnh giờ
-                                  </button>
-                                </div>
-                              )}
-                            </>
+                            </div>
                           )}
                         </div>
                       </div>
-
-                      {/* Display Pending Absence Reason Box in Amber */}
-                      {isPending && m.absence_reason && (
-                        <div
-                          style={{
-                            marginTop: 10,
-                            padding: "8px 12px",
-                            borderRadius: 6,
-                            background: "#ffffff",
-                            border: "1px dashed #f59e0b",
-                            borderLeft: "4px solid #f59e0b",
-                            fontSize: 12,
-                            color: "#92400e",
-                          }}
-                        >
-                          <strong>📝 Đơn xin nghỉ vắng gửi Quản lý:</strong> "{m.absence_reason}"
-                        </div>
-                      )}
-
-                      {/* Display Approved Absence Reason Box in Red */}
-                      {isAbsent && m.absence_reason && (
-                        <div
-                          style={{
-                            marginTop: 10,
-                            padding: "8px 12px",
-                            borderRadius: 6,
-                            background: "#ffffff",
-                            border: "1px dashed #ef4444",
-                            borderLeft: "4px solid #ef4444",
-                            fontSize: 12,
-                            color: "#991b1b",
-                          }}
-                        >
-                          <strong>📝 Lý do vắng:</strong> "{m.absence_reason}"
-                          {m.approved_by_name && (
-                            <span style={{ marginLeft: 8, color: "#64748b", fontWeight: 600 }}>
-                              • Đã duyệt bởi: <strong>{m.approved_by_name}</strong>
-                            </span>
-                          )}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -3309,161 +2874,7 @@ export function SchedulePage() {
           </div>
         </div>
       )}
-
-      {/* ================= MODAL: BÁO VẮNG CA KÈM LÝ DO (REPORT ABSENCE MODAL) ================= */}
-      {reportAbsenceModal.open && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15, 23, 42, 0.6)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 10002,
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              background: "#ffffff",
-              borderRadius: 16,
-              border: "1px solid #e2e8f0",
-              maxWidth: 560,
-              width: "100%",
-              padding: 24,
-              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.3)",
-              animation: "fadeIn 0.2s ease-out",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                borderBottom: "1px solid #e2e8f0",
-                paddingBottom: 12,
-                marginBottom: 16,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <UserX size={20} color="#dc2626" />
-                <h3 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: "#dc2626" }}>
-                  Nộp Đơn Báo Vắng Ca Cho Quản Lý
-                </h3>
-              </div>
-              <button
-                onClick={() => setReportAbsenceModal((prev) => ({ ...prev, open: false }))}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#64748b",
-                }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleReportAbsenceSubmit}>
-              <div
-                style={{
-                  background: "#fef2f2",
-                  padding: 12,
-                  borderRadius: 8,
-                  marginBottom: 16,
-                  border: "1px solid #fecaca",
-                }}
-              >
-                <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 700 }}>Nhân viên xin nghỉ vắng:</div>
-                {isAdmin ? (
-                  <div style={{ marginTop: 4 }}>
-                    <select
-                      value={reportAbsenceModal.targetUser?.id || ""}
-                      onChange={(e) => {
-                        const selId = Number(e.target.value);
-                        const sel = allMembers.find((m) => m.id === selId) || user;
-                        setReportAbsenceModal((prev) => ({ ...prev, targetUser: sel }));
-                      }}
-                      className="form-control"
-                      style={{
-                        fontWeight: 700,
-                        fontSize: 13,
-                        color: "#991b1b",
-                        background: "#ffffff",
-                        borderColor: "#fca5a5",
-                        borderRadius: 6,
-                        padding: "6px 10px",
-                        width: "100%",
-                      }}
-                    >
-                      {allMembers.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.full_name || m.username} (@{m.username}) {m.id === user?.id ? "— (Quản trị viên)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 14, fontWeight: 800, color: "#7f1d1d", marginTop: 2 }}>
-                    {reportAbsenceModal.targetUser?.full_name || user?.full_name}
-                  </div>
-                )}
-                <div style={{ fontSize: 12, color: "#991b1b", marginTop: 6 }}>
-                  Ca: <strong>{reportAbsenceModal.shiftName}</strong> (
-                  {reportAbsenceModal.shiftLabel}) • Ngày:{" "}
-                  <strong>{reportAbsenceModal.workDate}</strong>
-                </div>
-                <div style={{ fontSize: 11.5, color: "#64748b", marginTop: 6, fontStyle: "italic" }}>
-                  💡 Đơn xin nghỉ chỉ áp dụng cho riêng nhân sự này. Các nhân sự khác trong ca vẫn làm việc bình thường.
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 16 }}>
-                <label className="form-label" style={{ fontWeight: 700 }}>
-                  Lý do báo vắng mặt (* bắt buộc gửi Quản lý):
-                </label>
-                <textarea
-                  required
-                  rows={3}
-                  className="form-control"
-                  placeholder="Ví dụ: Bị ốm đột xuất, bận thi học kỳ, việc gia đình đột xuất..."
-                  value={reportAbsenceModal.reason}
-                  onChange={(e) =>
-                    setReportAbsenceModal((prev) => ({ ...prev, reason: e.target.value }))
-                  }
-                />
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => setReportAbsenceModal((prev) => ({ ...prev, open: false }))}
-                  className="btn btn-secondary btn-sm"
-                  disabled={reportAbsenceModal.submitting}
-                >
-                  Hủy Bỏ
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-danger btn-sm"
-                  disabled={reportAbsenceModal.submitting}
-                  style={{
-                    background: "#dc2626",
-                    borderColor: "#dc2626",
-                    fontWeight: 700,
-                  }}
-                >
-                  {reportAbsenceModal.submitting ? "Đang gửi đơn..." : "Gửi Đơn Xin Vắng Đến Quản Lý"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ================= MODAL: DANH SÁCH SỰ KIỆN CA (EVENT MODAL) ================= */}
+{/* ================= MODAL: DANH SÁCH SỰ KIỆN CA (EVENT MODAL) ================= */}
       {eventModal.open && (
         <div
           style={{
@@ -5157,26 +4568,6 @@ export function SchedulePage() {
           await fetchSchedule();
         }}
         showToast={showToast}
-      />
-
-      {/* BULK ABSENCE & RESTORE MODAL */}
-      <BulkAbsenceModal
-        isOpen={showBulkAbsenceModal}
-        onClose={() => {
-          setShowBulkAbsenceModal(false);
-          setBulkAbsenceDate(null);
-        }}
-        currentUser={user}
-        allMembers={allMembers}
-        weekDays={weekDays}
-        schedule={schedule}
-        initialMode={bulkAbsenceMode}
-        initialDate={bulkAbsenceDate}
-        onSuccess={(msg) => {
-          showToast(msg);
-          fetchSchedule();
-          if (isAdmin) fetchPendingRequests();
-        }}
       />
 
       {/* KPI LEADERBOARD MODAL */}

@@ -54,6 +54,7 @@ const TAB_TITLES = {
   history: "Nhật Ký Lịch Sử Ca",
   emails: "Nhật Ký Email",
   smtp: "Cài Đặt Email (SMTP)",
+  door: "Khóa Cửa Thông Minh (IoT)",
   tv: "Màn Hình Kiosk TV",
 };
 
@@ -68,6 +69,7 @@ const TAB_ICONS = {
   history: History,
   emails: Mail,
   smtp: Settings,
+  door: Key,
   tv: Tv,
 };
 
@@ -148,6 +150,7 @@ export function Navbar({ activeTab, setActiveTab, children }) {
   // 2. Menu hệ thống & quản trị
   const systemItems = [
     { id: "history", label: "Lịch sử ca", icon: History, desc: "Nhật ký đăng ký, hủy & đổi ca" },
+    { id: "door", label: "Khóa cửa (ESP8266)", icon: Key, desc: "Xác thực API & điều khiển khóa IoT" },
     ...(isAdmin || isLeader
       ? [
           { id: "emails", label: "Nhật ký Email", icon: Mail, desc: "Danh sách email đã gửi ra ngoài" },

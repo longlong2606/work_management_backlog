@@ -24,18 +24,17 @@ export function KpiLeaderboardModal({
       const memberShifts = schedule.filter((s) => s.user_id === member.id);
 
       let explicitAssignedHours = 0;
-      let absentHours = 0;
-      let absentCount = 0;
       let attendedCount = 0;
+      let accumulatedHours = 0; // KPI bắt đầu từ 0h
 
       // Phân tích chi tiết 6 ngày trong tuần (T2 -> T7)
       const dailyBreakdown = weekDays.map((day) => {
         const dayShifts = memberShifts.filter((s) => s.work_date === day.dateStr);
 
-        let dayAbsent = 0;
         let dayAttended = 0;
+        let dayUnattended = 0;
         let dayAssignedHours = 0;
-        let dayDeductedHours = 0;
+        let dayAccumulatedHours = 0;
 
         const analyzedShifts = dayShifts.map((s) => {
           const shiftMeta = SHIFTS.find((sh) => sh.id === s.shift_id) || {
@@ -46,23 +45,20 @@ export function KpiLeaderboardModal({
           const standardDuration = 1.5;
           const actualHours = (s.actual_hours !== null && s.actual_hours !== undefined) ? Number(s.actual_hours) : null;
           const duration = actualHours !== null ? actualHours : standardDuration;
+          const isPresent = s.attendance_status === "present";
           const isAbsent = s.attendance_status === "absent";
           const isPending = s.attendance_status === "pending_absence";
 
           dayAssignedHours += duration;
 
-          let finalStatus = "present";
-          if (isAbsent) {
-            finalStatus = "absent";
-            dayAbsent += 1;
-            dayDeductedHours += standardDuration;
-          } else if (isPending) {
-            finalStatus = "pending_absence";
-            dayAbsent += 1;
-            dayDeductedHours += standardDuration;
-          } else {
+          let finalStatus = "not_checked_in";
+          if (isPresent) {
             finalStatus = "present";
             dayAttended += 1;
+            dayAccumulatedHours += duration;
+          } else {
+            dayUnattended += 1;
+            finalStatus = isAbsent ? "absent" : isPending ? "pending_absence" : "not_checked_in";
           }
 
           return {
@@ -71,6 +67,7 @@ export function KpiLeaderboardModal({
             standardDuration,
             actualHours,
             duration,
+            isPresent,
             isAbsent,
             isPending,
             finalStatus,
@@ -88,42 +85,38 @@ export function KpiLeaderboardModal({
           shifts: analyzedShifts,
           totalShifts: dayShifts.length,
           attendedCount: dayAttended,
-          absentCount: dayAbsent,
+          unattendedCount: dayUnattended,
           plannedHours: dayAssignedHours,
-          actualHours: Math.max(0, dayAssignedHours - dayDeductedHours),
-          hasMissed: dayAbsent > 0,
+          actualHours: dayAccumulatedHours,
+          hasMissed: false,
         };
       });
 
-      // Tổng hợp toàn tuần từ memberShifts
+      // Tổng hợp toàn tuần: Bắt đầu từ 0h, mỗi ca có mặt sẽ cộng lên
       memberShifts.forEach((s) => {
         const standardDuration = 1.5;
-        const isAbsent = s.attendance_status === "absent" || s.attendance_status === "pending_absence";
-        if (isAbsent) {
-          absentHours += standardDuration;
-          absentCount += 1;
-          explicitAssignedHours += standardDuration;
-        } else {
-          const dur = (s.actual_hours !== null && s.actual_hours !== undefined && Number(s.actual_hours) >= 0)
-            ? Number(s.actual_hours)
-            : standardDuration;
-          explicitAssignedHours += dur;
+        const dur = (s.actual_hours !== null && s.actual_hours !== undefined && Number(s.actual_hours) >= 0)
+          ? Number(s.actual_hours)
+          : standardDuration;
+        explicitAssignedHours += dur;
+
+        if (s.attendance_status === "present") {
+          accumulatedHours += dur;
           attendedCount += 1;
         }
       });
 
-      // Tính quỹ KPI chuẩn 20.0h / tuần (tính lũy kế cả tuần)
-      const totalAssignedHours = explicitAssignedHours > 0 ? explicitAssignedHours : (memberShifts.length === 0 ? 0 : kpiTarget);
-      const validKpiHours = Math.max(0, totalAssignedHours - absentHours);
+      // KPI chuẩn 20.0h / tuần (bắt đầu từ 0h)
+      const validKpiHours = accumulatedHours;
       const kpiPercent = Math.min(100, Math.round((validKpiHours / kpiTarget) * 100));
       const isMet = validKpiHours >= kpiTarget;
 
       return {
         member,
         totalShifts: memberShifts.length,
-        totalAssignedHours,
-        absentHours,
-        absentCount,
+        totalAssignedHours: explicitAssignedHours,
+        absentHours: 0,
+        absentCount: 0,
         attendedCount,
         validKpiHours,
         kpiPercent,
@@ -131,11 +124,11 @@ export function KpiLeaderboardModal({
         dailyBreakdown,
       };
     }).sort((a, b) => {
-      // Ưu tiên xếp hạng theo giờ KPI hợp lệ (đã trừ vắng), sau đó đến tổng ca
+      // Ưu tiên xếp hạng theo giờ KPI đã tích lũy (bắt đầu từ 0 cộng lên)
       if (b.validKpiHours !== a.validKpiHours) {
         return b.validKpiHours - a.validKpiHours;
       }
-      return b.totalAssignedHours - a.totalAssignedHours;
+      return b.attendedCount - a.attendedCount;
     });
   }, [allMembers, schedule, weekDays, kpiTarget]);
 
@@ -236,7 +229,7 @@ export function KpiLeaderboardModal({
                 </span>
               </div>
               <div style={{ fontSize: 12, color: "#dbeafe", marginTop: 3 }}>
-                Chỉ tiêu: Có mặt tối thiểu 20 giờ / tuần (tính lũy kế cả tuần từ Thứ 2 đến Thứ 7, ~3.3h/ngày, không phải mỗi ngày 20h) • Ca báo vắng sẽ trừ bớt giờ
+                Chỉ tiêu: Tích lũy tối thiểu 20 giờ / tuần (tính lũy kế theo các ca đã báo có mặt từ Thứ 2 đến Thứ 7, bắt đầu từ 0h, mỗi ca cộng 1.5h)
               </div>
             </div>
           </div>
@@ -288,7 +281,7 @@ export function KpiLeaderboardModal({
               {kpiTarget}h <span style={{ fontSize: 11, fontWeight: 500 }}>/ tuần</span>
             </div>
             <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>
-              (Lũy kế cả tuần, ~3.3h/ngày)
+              (Bắt đầu từ 0h, mỗi ca +1.5h)
             </div>
           </div>
 
@@ -302,10 +295,13 @@ export function KpiLeaderboardModal({
             }}
           >
             <div style={{ fontSize: 11, color: "#15803d", fontWeight: 700 }}>
-              ✅ GIỜ KPI HỢP LỆ
+              ✅ ĐÃ TÍCH LŨY KPI
             </div>
             <div style={{ fontSize: 20, fontWeight: 900, color: "#16a34a", marginTop: 2 }}>
               {totalValidKpiHoursAll.toFixed(1)}h
+            </div>
+            <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+              (Toàn bộ nhân sự)
             </div>
           </div>
 
@@ -319,28 +315,34 @@ export function KpiLeaderboardModal({
             }}
           >
             <div style={{ fontSize: 11, color: "#1d4ed8", fontWeight: 700 }}>
-              📅 TỔNG LỊCH ĐÃ XẾP
+              📅 TỔNG LỊCH ĐÃ PHÂN
             </div>
             <div style={{ fontSize: 20, fontWeight: 900, color: "#2563eb", marginTop: 2 }}>
               {totalAssignedHoursAll.toFixed(1)}h
+            </div>
+            <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+              (Kế hoạch tuần)
             </div>
           </div>
 
           <div
             style={{
-              background: totalMissedShiftsAll > 0 ? "#fef2f2" : "#ffffff",
+              background: "#ffffff",
               padding: "12px 14px",
               borderRadius: 12,
-              border: totalMissedShiftsAll > 0 ? "1.5px solid #fca5a5" : "1px solid #e2e8f0",
+              border: "1.5px solid #fed7aa",
               textAlign: "center",
             }}
           >
-            <div style={{ fontSize: 11, color: totalMissedShiftsAll > 0 ? "#b91c1c" : "#64748b", fontWeight: 700 }}>
-              ⚠️ BỊ TRỪ DO VẮNG
+            <div style={{ fontSize: 11, color: "#c2410c", fontWeight: 700 }}>
+              🏆 ĐÃ ĐẠT CHUẨN 20H
             </div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: totalMissedShiftsAll > 0 ? "#dc2626" : "#64748b", marginTop: 2 }}>
-              {totalAbsentHoursAll.toFixed(1)}h{" "}
-              <span style={{ fontSize: 10, fontWeight: 600 }}>({totalMissedShiftsAll} ca / {membersWithMissed} người)</span>
+            <div style={{ fontSize: 20, fontWeight: 900, color: "#ea580c", marginTop: 2 }}>
+              {leaderboardData.filter((d) => d.isMet).length}{" "}
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#64748b" }}>/ {leaderboardData.length} người</span>
+            </div>
+            <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>
+              ({leaderboardData.length > 0 ? Math.round((leaderboardData.filter((d) => d.isMet).length / leaderboardData.length) * 100) : 0}% đội ngũ)
             </div>
           </div>
         </div>
@@ -405,25 +407,7 @@ export function KpiLeaderboardModal({
               Chưa đủ 20h ({leaderboardData.filter((d) => !d.isMet).length})
             </button>
 
-            <button
-              onClick={() => setActiveTab("missed")}
-              style={{
-                padding: "6px 12px",
-                borderRadius: 20,
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: "pointer",
-                border: activeTab === "missed" ? "1.5px solid #ef4444" : "1px solid #e2e8f0",
-                background: activeTab === "missed" ? "#fef2f2" : "#ffffff",
-                color: activeTab === "missed" ? "#b91c1c" : "#475569",
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-              }}
-            >
-              <AlertTriangle size={13} color="#ef4444" />
-              Bị trừ do vắng ({membersWithMissed})
-            </button>
+            
           </div>
 
           <div style={{ fontSize: 11, color: "#64748b" }}>
@@ -523,15 +507,9 @@ export function KpiLeaderboardModal({
                         <div style={{ fontSize: 11, color: "#64748b", display: "flex", alignItems: "center", gap: 5, marginTop: 1 }}>
                           <span>@{member.username}</span>
                           <span>•</span>
-                          <span style={{ color: "#16a34a", fontWeight: 600 }}>{attendedCount} ca có mặt ({validKpiHours.toFixed(1)}h)</span>
-                          {absentCount > 0 && (
-                            <>
-                              <span>•</span>
-                              <span style={{ color: isMet ? "#d97706" : "#dc2626", fontWeight: 600 }}>
-                                Vắng {absentCount} ca (-{absentHours.toFixed(1)}h)
-                              </span>
-                            </>
-                          )}
+                          <span style={{ color: isMet ? "#16a34a" : "#2563eb", fontWeight: 700 }}>
+                            {attendedCount}/{totalShifts} ca có mặt (+{validKpiHours.toFixed(1)}h KPI)
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -577,9 +555,7 @@ export function KpiLeaderboardModal({
 
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b", marginTop: 3 }}>
                         <span>
-                          {isMet
-                            ? "✅ Đã đủ 20 giờ chuẩn tuần"
-                            : (absentCount > 0 ? `Bị trừ ${absentHours.toFixed(1)}h do vắng/trùng lịch` : "Đang tích lũy giờ trong tuần")}
+                          {isMet ? "✅ Đã tích lũy đủ 20 giờ chuẩn tuần" : "Tích lũy khi báo có mặt từng ca"}
                         </span>
                         <span style={{ fontWeight: 700, color: isMet ? "#16a34a" : "#dc2626" }}>
                           {isMet ? "Đạt chuẩn" : `Còn thiếu ${(kpiTarget - validKpiHours).toFixed(1)}h`}
@@ -608,8 +584,8 @@ export function KpiLeaderboardModal({
                       ) : (
                         <span
                           style={{
-                            background: absentCount > 0 ? "#fee2e2" : "#fef3c7",
-                            color: absentCount > 0 ? "#b91c1c" : "#b45309",
+                            background: "#eff6ff",
+                            color: "#1d4ed8",
                             padding: "3px 10px",
                             borderRadius: 20,
                             fontSize: 11,
@@ -619,7 +595,6 @@ export function KpiLeaderboardModal({
                             gap: 4,
                           }}
                         >
-                          {absentCount > 0 ? <AlertTriangle size={13} /> : null}
                           Thiếu {(kpiTarget - validKpiHours).toFixed(1)}h
                         </span>
                       )}
@@ -731,13 +706,7 @@ export function KpiLeaderboardModal({
                                       <span>{sh.duration}h</span>
                                     </div>
                                     <div style={{ fontSize: 9, opacity: 0.9 }}>
-                                      {sh.isAbsent && (
-                                        (sh.absence_reason?.includes("Trùng lịch học") || sh.time_note?.includes("Trùng TKB"))
-                                          ? "🎓 VẮNG DO TRÙNG TKB (ĐÃ TRỪ KPI)"
-                                          : "❌ VẮNG (Bị trừ giờ)"
-                                      )}
-                                      {sh.isPending && "🟡 Chờ duyệt vắng"}
-                                      {!sh.isAbsent && !sh.isPending && "✅ Có mặt"}
+                                      {sh.isPresent ? "✅ Đã có mặt (+1.5h)" : (sh.absence_reason || sh.time_note ? `🎓 ${sh.time_note || sh.absence_reason}` : "Chưa điểm danh (0h)")}
                                     </div>
                                     {(sh.absence_reason || sh.time_note) && (
                                       <div style={{ fontSize: 8, color: "#64748b", fontStyle: "italic", marginTop: 1, wordBreak: "break-word" }}>
@@ -755,14 +724,9 @@ export function KpiLeaderboardModal({
                                 <span style={{ color: "#94a3b8" }}>Nghỉ</span>
                               ) : (
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <span style={{ color: "#16a34a", fontWeight: 700 }}>
-                                    Có mặt {day.actualHours}h
+                                  <span style={{ color: day.actualHours > 0 ? "#16a34a" : "#64748b", fontWeight: 700 }}>
+                                    Có mặt {day.actualHours}h ({day.attendedCount}/{day.totalShifts} ca)
                                   </span>
-                                  {day.absentCount > 0 && (
-                                    <span style={{ color: "#dc2626", fontWeight: 600 }}>
-                                      (-{day.absentCount * 1.5}h)
-                                    </span>
-                                  )}
                                 </div>
                               )}
                             </div>
@@ -791,7 +755,7 @@ export function KpiLeaderboardModal({
           <div style={{ fontSize: 12, color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
             <Info size={14} color="#2563eb" />
             <span>
-              <strong>Quy tắc tính KPI 20 giờ / tuần:</strong> Định mức 20 giờ là chỉ tiêu tính <strong>tổng lũy kế cho cả 1 tuần</strong> (trung bình ~3.3 giờ/ngày làm việc, <strong>không phải mỗi ngày 20 tiếng</strong>). Nhân sự có mặt đủ các ca đã xếp đạt từ 20 giờ trở lên trong tuần sẽ được tính đạt 100% KPI.
+              <strong>Quy tắc tính KPI 20 giờ / tuần:</strong> KPI bắt đầu từ 0h. Mỗi ca trực nhân sự báo có mặt sẽ được cộng 1.5h (hoặc số giờ thực tế) vào tiến độ tuần. Tích lũy đủ từ 20 giờ trở lên trong tuần (từ Thứ 2 đến Thứ 7) sẽ được ghi nhận đạt chuẩn 100% KPI.
             </span>
           </div>
 

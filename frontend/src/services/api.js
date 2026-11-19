@@ -365,6 +365,28 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  checkInShift: ({ userId, shiftId, workDate }) =>
+    request('/shifts/attendance/toggle', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: userId,
+        shift_id: shiftId,
+        work_date: workDate,
+        attendance_status: 'present',
+      }),
+    }),
+
+  cancelCheckIn: ({ userId, shiftId, workDate }) =>
+    request('/shifts/attendance/toggle', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: userId,
+        shift_id: shiftId,
+        work_date: workDate,
+        attendance_status: 'not_checked_in',
+      }),
+    }),
+
   updateAttendance: (registrationId, attendanceStatus) =>
     request(`/shifts/registrations/${registrationId}/attendance`, {
       method: "PUT",
@@ -490,4 +512,38 @@ export const api = {
   // Contribution Points (CP) System
   getCpLeaderboard: () => request(`/cp/leaderboard?_t=${Date.now()}`),
   getUserCpHistory: (userId) => request(`/cp/history/${userId}?_t=${Date.now()}`),
+
+  // Smart Door Lock & RFID Cards (Khóa cửa & Thẻ từ thông minh IoT)
+  getDoorSettings: () => request("/door/settings"),
+  updateDoorSettings: (data) =>
+    request("/door/settings", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  getDoorLogs: (limit = 100) => request(`/door/logs?limit=${limit}`),
+  clearDoorLogs: () =>
+    request("/door/logs", {
+      method: "DELETE",
+    }),
+  unlockDoorRemote: () =>
+    request("/door/unlock-remote", {
+      method: "POST",
+    }),
+  getDoorCards: (search = "") =>
+    request(`/cards${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+  addDoorCard: (data) =>
+    request("/cards", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  deleteDoorCard: (cardUid) =>
+    request(`/cards/${encodeURIComponent(cardUid)}`, {
+      method: "DELETE",
+    }),
+  toggleDoorCard: (cardUid) =>
+    request(`/cards/${encodeURIComponent(cardUid)}/toggle`, {
+      method: "POST",
+    }),
+  testDoorAccess: (key, macid, timestamp, card_uid = "") =>
+    request(`/?key=${encodeURIComponent(key)}&macid=${encodeURIComponent(macid)}&timestamp=${encodeURIComponent(timestamp)}${card_uid ? `&card_uid=${encodeURIComponent(card_uid)}` : ""}`),
 };

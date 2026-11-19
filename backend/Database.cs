@@ -146,7 +146,7 @@ public static class Database
                 target_shift_id INTEGER,
                 target_work_date TEXT,
                 request_reason TEXT,
-                attendance_status TEXT DEFAULT 'present',
+                attendance_status TEXT DEFAULT 'not_checked_in',
                 absence_reason TEXT,
                 absence_reported_at TIMESTAMP,
                 absence_approved_by INTEGER,
@@ -353,13 +353,38 @@ public static class Database
                 color TEXT DEFAULT '#3b82f6',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS door_access_logs (
+                id {pk},
+                key_used TEXT,
+                macid TEXT,
+                device_timestamp TEXT,
+                status TEXT NOT NULL,
+                action TEXT DEFAULT 'unlock',
+                message TEXT,
+                ip_address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS door_cards (
+                id {pk},
+                card_uid TEXT UNIQUE NOT NULL,
+                card_holder TEXT,
+                user_id INTEGER,
+                is_active INTEGER DEFAULT 1,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             ");
 
             // Backward compatibility and robust schema evolution for both PostgreSQL and SQLite
+            EnsureColumn(conn, "door_access_logs", "card_uid", "TEXT");
+            EnsureColumn(conn, "door_access_logs", "card_holder", "TEXT");
             EnsureColumn(conn, "shift_registrations", "target_shift_id", "INTEGER");
             EnsureColumn(conn, "shift_registrations", "target_work_date", "TEXT");
             EnsureColumn(conn, "shift_registrations", "request_reason", "TEXT");
-            EnsureColumn(conn, "shift_registrations", "attendance_status", "TEXT DEFAULT 'present'");
+            EnsureColumn(conn, "shift_registrations", "attendance_status", "TEXT DEFAULT 'not_checked_in'");
             EnsureColumn(conn, "shift_registrations", "absence_reason", "TEXT");
             EnsureColumn(conn, "shift_registrations", "absence_reported_at", "TIMESTAMP");
             EnsureColumn(conn, "shift_registrations", "absence_approved_by", "INTEGER");
@@ -672,7 +697,7 @@ public static class Database
                     'users', 'tasks', 'subtasks', 'cp_transactions', 
                     'shift_registrations', 'shift_history', 'shift_notes', 
                     'class_schedules', 'feedbacks', 'notifications', 
-                    'email_logs', 'shift_events', 'departments'
+                    'email_logs', 'shift_events', 'departments', 'door_access_logs', 'door_cards'
                 ])
                 LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = tbl) THEN

@@ -561,7 +561,7 @@ export function TvDisplayPage({ onNavigateToManagement }) {
               boxShadow: "0 1px 3px rgba(0, 0, 0, 0.02)"
             }}
           >
-            <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Cơ chế Điểm danh & Báo vắng</div>
+            <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Cơ chế Điểm danh & Báo có mặt</div>
             <div style={{ fontSize: 13, fontWeight: 800, color: "#d97706", marginTop: 4 }}>
               Bấm 2 người để xem • Tự động lướt trang
             </div>
@@ -857,10 +857,6 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10b981" }} />
                 Có mặt
               </span>
-              <span style={{ display: "flex", alignItems: "center", gap: 4, color: "#e11d48", fontWeight: 700 }}>
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f43f5e" }} />
-                Báo vắng
-              </span>
             </div>
           </div>
 
@@ -879,8 +875,9 @@ export function TvDisplayPage({ onNavigateToManagement }) {
               const shiftMembers = scheduleData.registrations.filter(
                 (r) => r.shift_id === shift.id || r.shiftId === shift.id
               );
+              const presentCount = shiftMembers.filter((m) => m.attendance_status === "present").length;
               const absentCount = shiftMembers.filter((m) => m.attendance_status === "absent").length;
-              const presentCount = Math.max(0, (shiftMembers.length || totalAssignedStaff || 21) - absentCount);
+              const totalCount = shiftMembers.length || totalAssignedStaff || 21;
 
               // Danh sách sự kiện riêng của ca này
               const shiftEvents = scheduleData.events.filter((e) => e.shift_id === shift.id);
@@ -968,9 +965,9 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                       {/* Badge số lượng người */}
                       <span
                         style={{
-                          background: absentCount > 0 ? "#fff1f2" : "#eff6ff",
-                          border: absentCount > 0 ? "1px solid #fecdd3" : "1px solid #bfdbfe",
-                          color: absentCount > 0 ? "#be123c" : "#1d4ed8",
+                          background: presentCount > 0 ? "#f0fdf4" : "#eff6ff",
+                          border: presentCount > 0 ? "1px solid #86efac" : "1px solid #bfdbfe",
+                          color: presentCount > 0 ? "#166534" : "#1d4ed8",
                           padding: "1px 6px",
                           borderRadius: 6,
                           fontSize: 11,
@@ -980,28 +977,8 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                           gap: 3
                         }}
                       >
-                        <Users size={11} /> {presentCount} người
+                        <Users size={11} /> {presentCount}/{totalCount} có mặt
                       </span>
-
-                      {/* Huy hiệu vắng mặt nếu có */}
-                      {shiftMembers.some((m) => m.attendance_status === "absent") && (
-                        <span
-                          style={{
-                            background: "#fee2e2",
-                            border: "1px solid #fca5a5",
-                            color: "#b91c1c",
-                            padding: "1px 6px",
-                            borderRadius: 6,
-                            fontSize: 10,
-                            fontWeight: 800,
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 2
-                          }}
-                        >
-                          🔴 {shiftMembers.filter((m) => m.attendance_status === "absent").length} vắng
-                        </span>
-                      )}
 
                       {/* Nút Xem chi tiết */}
                       <span
@@ -1083,7 +1060,13 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                         }}
                       >
                         {shiftMembers.map((m, idx) => {
+                          const isPresent = m.attendance_status === "present";
                           const isAbsent = m.attendance_status === "absent";
+                          const cardBg = isPresent ? "#f0fdf4" : isAbsent ? "#fee2e2" : "#f8fafc";
+                          const cardBorder = isPresent ? "1.5px solid #86efac" : isAbsent ? "1.5px solid #fca5a5" : "1px solid #e2e8f0";
+                          const cardColor = isPresent ? "#15803d" : isAbsent ? "#b91c1c" : "#64748b";
+                          const dotColor = isPresent ? "#10b981" : isAbsent ? "#ef4444" : "#94a3b8";
+
                           return (
                             <div
                               key={m.id || idx}
@@ -1096,14 +1079,14 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                                 minHeight: 26,
                                 padding: "2px 8px",
                                 borderRadius: 6,
-                                background: isAbsent ? "#fee2e2" : "#f0fdf4",
-                                border: isAbsent ? "1.5px solid #fca5a5" : "1px solid #bbf7d0",
-                                color: isAbsent ? "#b91c1c" : "#15803d",
+                                background: cardBg,
+                                border: cardBorder,
+                                color: cardColor,
                                 fontSize: 11,
                                 fontWeight: 700,
                                 boxSizing: "border-box"
                               }}
-                              title={isAbsent ? `${m.full_name || m.username} (Vắng mặt)` : `${m.full_name || m.username} (Có mặt)`}
+                              title={isPresent ? `${m.full_name || m.username} (Đã có mặt)` : isAbsent ? `${m.full_name || m.username} (Vắng mặt)` : `${m.full_name || m.username} (Chưa điểm danh)`}
                             >
                               <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
                                 <span
@@ -1111,7 +1094,7 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                                     width: 7,
                                     height: 7,
                                     borderRadius: "50%",
-                                    background: isAbsent ? "#ef4444" : "#10b981",
+                                    background: dotColor,
                                     flexShrink: 0
                                   }}
                                 />
@@ -1128,21 +1111,7 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                               </div>
 
                               <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 6 }}>
-                                {isAbsent ? (
-                                  <span
-                                    style={{
-                                      fontSize: 9,
-                                      fontWeight: 800,
-                                      background: "#ef4444",
-                                      color: "#ffffff",
-                                      padding: "1px 5px",
-                                      borderRadius: 4,
-                                      letterSpacing: 0.3
-                                    }}
-                                  >
-                                    Vắng mặt
-                                  </span>
-                                ) : (
+                                {isPresent ? (
                                   <span
                                     style={{
                                       fontSize: 9,
@@ -1154,6 +1123,33 @@ export function TvDisplayPage({ onNavigateToManagement }) {
                                     }}
                                   >
                                     Có mặt
+                                  </span>
+                                ) : isAbsent ? (
+                                  <span
+                                    style={{
+                                      fontSize: 9,
+                                      fontWeight: 800,
+                                      background: "#ef4444",
+                                      color: "#ffffff",
+                                      padding: "1px 5px",
+                                      borderRadius: 4,
+                                      letterSpacing: 0.3
+                                    }}
+                                  >
+                                    Vắng
+                                  </span>
+                                ) : (
+                                  <span
+                                    style={{
+                                      fontSize: 8.5,
+                                      fontWeight: 600,
+                                      background: "#f1f5f9",
+                                      color: "#64748b",
+                                      padding: "1px 4px",
+                                      borderRadius: 4
+                                    }}
+                                  >
+                                    Chưa báo
                                   </span>
                                 )}
                               </div>

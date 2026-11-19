@@ -15,8 +15,9 @@ import { CpLeaderboardPage } from "./pages/CpLeaderboardPage";
 import { EmailOutboxPage } from "./pages/EmailOutboxPage";
 import { EmailSettingsPage } from "./pages/EmailSettingsPage";
 import { TvDisplayPage } from "./pages/TvDisplayPage";
+import { DoorLockPage } from "./pages/DoorLockPage";
 
-const VALID_TABS = ["schedule", "tasks", "cp", "competency", "history", "notes", "feedback", "staff", "emails", "smtp"];
+const VALID_TABS = ["schedule", "tasks", "cp", "competency", "history", "notes", "feedback", "staff", "emails", "smtp", "door"];
 
 function getTabFromUrl() {
   if (typeof window === "undefined") return "schedule";
@@ -143,6 +144,7 @@ function MainContent() {
           {activeTab === "staff" && (canViewStaff || canManageStaff) && <StaffManagementPage onNavigateToCompetency={() => navigateToTab("competency")} />}
           {activeTab === "emails" && (isAdmin || isLeader) && <EmailOutboxPage />}
           {activeTab === "smtp" && isAdmin && <EmailSettingsPage />}
+          {activeTab === "door" && <DoorLockPage />}
         </main>
 
         {/* Footer */}
@@ -183,6 +185,11 @@ class ErrorBoundary extends React.Component {
             <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
             <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1e293b", margin: "0 0 8px 0" }}>Đã xảy ra sự cố hiển thị</h2>
             <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 20px 0" }}>Vui lòng bấm tải lại trang để tiếp tục sử dụng hệ thống.</p>
+            {this.state.error && (
+              <pre style={{ textAlign: "left", background: "#fef2f2", color: "#b91c1c", padding: 10, borderRadius: 8, fontSize: 11, maxHeight: 150, overflowY: "auto", marginBottom: 16, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                {this.state.error.toString()}
+              </pre>
+            )}
             <button
               onClick={() => {
                 this.setState({ hasError: false });
