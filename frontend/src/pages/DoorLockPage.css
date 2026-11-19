@@ -356,6 +356,7 @@
   text-overflow: ellipsis;
 }
 .dl-row-actions { display: flex; justify-content: flex-end; gap: 2px; }
+.dl-row-actions[hidden] { display: none; }   /* [1 NÚT] ẩn khi chưa bấm Quản lý thẻ */
 
 .dl-badge {
   display: inline-flex;
