@@ -180,6 +180,11 @@ export function DoorLockPage() {
   const [sessionError, setSessionError] = useState("");
   const [savedNotice, setSavedNotice] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [scans, setScans] = useState([]); // thẻ vừa chạm vào khóa trong phiên (mới nhất trước)
+  const hasSession = !!session;
+  const [scanNames, setScanNames] = useState({}); // tên đang gõ cho từng thẻ vừa chạm
+  const [scanBusy, setScanBusy] = useState(null);
+  const [scanError, setScanError] = useState({});
 
   // Hộp thoại
   const [editing, setEditing] = useState(null); // null | {mode:'add'|'edit', card?}
@@ -207,6 +212,7 @@ export function DoorLockPage() {
     try {
       const r = await api.getDoorSession();
       setSession(r.session ? { ...r.session, _fetchedAt: Date.now() } : null);
+      setScans(r.scans || []);
     } catch {
       /* mạng chập chờn: giữ trạng thái cũ, lần sau hỏi lại */
     }
@@ -217,9 +223,10 @@ export function DoorLockPage() {
     if (!canManage) return;
     loadAll();
     loadSession();
+    // Có phiên quản lý thẻ: hỏi 1,5 giây/lần để thẻ vừa chạm hiện nhanh; không có thì 3 giây/lần
     const fast = setInterval(() => {
       if (!document.hidden) loadSession();
-    }, 3000);
+    }, hasSession ? 1500 : 3000);
     const slow = setInterval(() => {
       if (!document.hidden) loadAll();
     }, 15000);
@@ -227,7 +234,7 @@ export function DoorLockPage() {
       clearInterval(fast);
       clearInterval(slow);
     };
-  }, [canManage, loadAll, loadSession]);
+  }, [canManage, loadAll, loadSession, hasSession]);
 
   // Đồng hồ đếm ngược chỉ chạy khi có phiên
   useEffect(() => {
@@ -256,6 +263,33 @@ export function DoorLockPage() {
       loadSession();
     } finally {
       setSessionBusy(false);
+    }
+  };
+
+  const refreshAll = () => Promise.all([loadAll(), loadSession()]);
+
+  // Thêm / đặt tên thẻ ngay từ khung "Thẻ vừa chạm"
+  const saveScanName = async (uid, card) => {
+    const name = (scanNames[uid] || "").trim();
+    if (!name) {
+      setScanError((m) => ({ ...m, [uid]: "Nhập tên người dùng thẻ." }));
+      return;
+    }
+    setScanBusy(uid);
+    setScanError((m) => ({ ...m, [uid]: "" }));
+    try {
+      await api.addDoorCard({
+        card_uid: card ? card.card_uid : uid,
+        card_holder: name,
+        note: card?.note || "",
+        is_active: card ? card.is_active : 1,
+      });
+      setScanNames((m) => ({ ...m, [uid]: "" }));
+      await refreshAll();
+    } catch (e) {
+      setScanError((m) => ({ ...m, [uid]: e.message || "Không lưu được thẻ." }));
+    } finally {
+      setScanBusy(null);
     }
   };
 
@@ -298,7 +332,7 @@ export function DoorLockPage() {
         is_active: editing.mode === "edit" ? editing.card.is_active : 1,
       });
       setEditing(null);
-      loadAll();
+      refreshAll();
     } catch (err) {
       setFormError(err.message || "Không lưu được thẻ.");
     } finally {
@@ -311,7 +345,7 @@ export function DoorLockPage() {
     setRowError((m) => ({ ...m, [card.id]: "" }));
     try {
       await api.toggleDoorCard(card.card_uid);
-      await loadAll();
+      await refreshAll();
     } catch (e) {
       setRowError((m) => ({ ...m, [card.id]: e.message || "Không đổi được trạng thái." }));
     } finally {
@@ -325,7 +359,7 @@ export function DoorLockPage() {
     try {
       await api.deleteDoorCard(card.card_uid);
       setConfirmDelete(null);
-      await loadAll();
+      await refreshAll();
     } catch (e) {
       setRowError((m) => ({ ...m, [card.id]: e.message || "Không xóa được thẻ." }));
       setConfirmDelete(null);
@@ -431,6 +465,93 @@ export function DoorLockPage() {
         onAction={sessionAction}
         savedNotice={savedNotice}
       />
+
+      {/* Thẻ vừa chạm vào khóa (chỉ khi đang trong chế độ quản lý thẻ) */}
+      {session?.status === "approved" && (
+        <section className="dl-scan" aria-label="Thẻ vừa chạm" aria-live="polite">
+          <div className="dl-scan-head">
+            <h2 className="dl-scan-title">Thẻ vừa chạm</h2>
+            <span className="dl-muted">Chạm thẻ vào khóa để xem hoặc thêm. Cửa không mở trong lúc này.</span>
+          </div>
+          {scans.length === 0 ? (
+            <p className="dl-scan-empty">Chưa có thẻ nào được chạm.</p>
+          ) : (
+            <ul className="dl-list">
+              {scans
+                .filter((s, i, arr) => arr.findIndex((x) => x.card_uid === s.card_uid) === i)
+                .map((s) => {
+                  const card = s.card;
+                  const t = new Date(s.at * 1000);
+                  const needsName = !card || isTempName(card.card_holder);
+                  return (
+                    <li key={s.card_uid} className="dl-scan-row">
+                      <span className="dl-log-time dl-num">{pad(t.getHours())}:{pad(t.getMinutes())}</span>
+                      <div className="dl-person-text">
+                        <span className="dl-person-name">
+                          {!card ? "Thẻ chưa có" : needsName ? "Thẻ chưa đặt tên" : card.card_holder}
+                        </span>
+                        <span className="dl-uid dl-num">{prettyUid(s.card_uid)}</span>
+                      </div>
+                      {needsName ? (
+                        <form
+                          className="dl-scan-form"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            saveScanName(s.card_uid, card);
+                          }}
+                        >
+                          <input
+                            value={scanNames[s.card_uid] || ""}
+                            onChange={(e) => setScanNames((m) => ({ ...m, [s.card_uid]: e.target.value }))}
+                            placeholder="Tên người dùng"
+                            aria-label={`Tên người dùng thẻ ${prettyUid(s.card_uid)}`}
+                            autoComplete="off"
+                          />
+                          <button type="submit" className="dl-btn dl-btn--primary" disabled={scanBusy === s.card_uid}>
+                            {card ? "Lưu tên" : <><Plus size={16} /> Thêm</>}
+                          </button>
+                        </form>
+                      ) : (
+                        <div className="dl-scan-actions">
+                          {card.is_active ? (
+                            <span className="dl-badge dl-badge--ok">Đang dùng</span>
+                          ) : (
+                            <span className="dl-badge dl-badge--off">Tạm khóa</span>
+                          )}
+                          <button type="button" className="dl-icon-btn" aria-label={`Đổi tên ${card.card_holder}`} title="Đổi tên" onClick={() => openEdit(card)}>
+                            <Pencil size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="dl-icon-btn"
+                            aria-label={card.is_active ? "Tạm khóa thẻ" : "Mở lại thẻ"}
+                            title={card.is_active ? "Tạm khóa" : "Mở lại"}
+                            disabled={rowBusy === card.id}
+                            onClick={() => toggleCard(card)}
+                          >
+                            {card.is_active ? <Lock size={16} /> : <Unlock size={16} />}
+                          </button>
+                          <button
+                            type="button"
+                            className="dl-icon-btn dl-icon-btn--danger"
+                            aria-label={`Xóa thẻ ${card.card_holder}`}
+                            title="Xóa"
+                            onClick={() => setConfirmDelete(card)}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      )}
+                      {(scanError[s.card_uid] || (card && rowError[card.id])) && (
+                        <span className="dl-inline-error dl-row-error">{scanError[s.card_uid] || rowError[card.id]}</span>
+                      )}
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+        </section>
+      )}
 
       {loadError && (
         <div className="dl-alert" role="alert">

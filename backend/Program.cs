@@ -4696,6 +4696,8 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
         return HandleEspSessionRequest(ctx, key, macid);
     if (string.Equals(actionParam, "session_status", StringComparison.OrdinalIgnoreCase))
         return HandleEspSessionStatus(ctx, key);
+    if (string.Equals(actionParam, "session_scan", StringComparison.OrdinalIgnoreCase))
+        return HandleEspSessionScan(ctx, key, card_uid);
 
     var localNow = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
     var serverTime = localNow;
@@ -4787,6 +4789,19 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
             action = "unlock";
             cardHolder = cardInfo.card_holder;
             statusMessage = $"Quẹt thẻ thành công: {cardInfo.card_holder ?? cardInfo.card_uid} (UID: {card_uid}). Cho phép mở cửa!";
+        }
+
+        // [ESP-LOCK] Khóa tự quyết mở cửa và có thể gửi muộn: danh sách web lúc nhận có thể đã khác lúc quẹt.
+        // Khóa gửi kèm result=granted|denied thì ghi đúng điều khóa đã làm.
+        var lockResult = ctx.Request.Query["result"].FirstOrDefault();
+        if (isKeyValid && (lockResult == "granted" || lockResult == "denied"))
+        {
+            isGranted = lockResult == "granted";
+            action = isGranted ? "unlock" : "none";
+            cardHolder = cardInfo?.card_holder;
+            statusMessage = isGranted
+                ? $"Khóa đã mở cửa cho thẻ {cardInfo?.card_holder ?? card_uid} (UID: {card_uid})"
+                : $"Khóa đã từ chối thẻ {cardInfo?.card_holder ?? card_uid} (UID: {card_uid})";
         }
     }
     else
@@ -5297,6 +5312,29 @@ IResult HandleEspSessionStatus(HttpContext ctx, string? key)
     }
 }
 
+// GET /api/?key=...&action=session_scan&session=a1b2c3&card_uid=290205B3
+// Khóa đang ở chế độ quản lý (approved), có thẻ chạm vào: lưu vào phiên để trang web hiện ra.
+IResult HandleEspSessionScan(HttpContext ctx, string? key, string? card_uid)
+{
+    if (!IsDoorManagerAuthorized(ctx, key)) return EspUnauthorized();
+    var sid = (ctx.Request.Query["session"].FirstOrDefault() ?? "").Trim().ToLower();
+    var uid = new string((card_uid ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpper();
+    if (uid.Length == 0) return Results.Json(new { success = false, message = "Thiếu card_uid" }, statusCode: 400);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (DoorSessionStore.Sync)
+    {
+        if (!DoorSessionStore.Sessions.TryGetValue(sid, out var s))
+            return Results.Json(new { status = "expired", message = "Không có phiên này" }, statusCode: 404);
+        DoorSessionStore.Expire(s, now);
+        if (s.status != "approved")
+            return Results.Json(new { status = s.status, message = "Phiên chưa được Đồng ý" }, statusCode: 409);
+        s.last_seen = now;
+        s.scans.Insert(0, new DoorScan { card_uid = uid, at = now });
+        if (s.scans.Count > 20) s.scans.RemoveRange(20, s.scans.Count - 20);
+        return Results.Ok(new { status = s.status });
+    }
+}
+
 // --- Phía web (admin/leader đăng nhập) ---
 object DoorSessionView(DoorSession s, long now)
 {
@@ -5317,6 +5355,8 @@ app.MapGet("/api/door/session", (HttpContext ctx) =>
     var u = AuthService.GetCurrentUser(ctx);
     if (u == null || (u.role != "admin" && u.role != "leader")) return Results.StatusCode(403);
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    object? view = null;
+    List<DoorScan> scans = new();
     lock (DoorSessionStore.Sync)
     {
         foreach (var x in DoorSessionStore.Sessions.Values) DoorSessionStore.Expire(x, now);
@@ -5324,8 +5364,18 @@ app.MapGet("/api/door/session", (HttpContext ctx) =>
             .Where(x => x.status == "pending" || x.status == "approved")
             .OrderByDescending(x => x.created_at)
             .FirstOrDefault();
-        return Results.Ok(new { success = true, session = s == null ? null : DoorSessionView(s, now) });
+        if (s != null) { view = DoorSessionView(s, now); scans = s.scans.ToList(); }
     }
+    // [ESP-LOCK] Thẻ vừa chạm: kèm thông tin thẻ trên web (null = chưa có thẻ này)
+    var cardsByUid = new Dictionary<string, DoorCardDto>();
+    if (scans.Count > 0)
+    {
+        using var conn = Database.GetConnection();
+        foreach (var c in conn.Query<DoorCardDto>("SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards"))
+            cardsByUid[new string((c.card_uid ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpper()] = c;
+    }
+    var scanViews = scans.Select(sc => new { sc.card_uid, sc.at, card = cardsByUid.GetValueOrDefault(sc.card_uid) });
+    return Results.Ok(new { success = true, session = view, scans = scanViews });
 });
 
 // POST /api/door/session/{id}/approve | deny | save
