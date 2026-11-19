@@ -9,12 +9,11 @@ namespace WorkManagement.Api;
 
 public static class Database
 {
-    private static readonly string DbType = Environment.GetEnvironmentVariable("DB_TYPE")?.ToLower() ?? 
-        (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING")) ? "postgres" : "sqlite");
+    private static readonly string DbType = Environment.GetEnvironmentVariable("DB_TYPE")?.ToLower() ?? "postgres";
     
     private static readonly string PostgresConnStr = Environment.GetEnvironmentVariable("CONNECTION_STRING") ?? 
         Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING") ?? 
-        "Host=db;Port=5432;Database=work_management;Username=postgres;Password=postgres_secret_2026";
+        "Host=localhost;Port=5432;Database=work_management;Username=postgres;Password=postgres_secret_2026";
 
     private static string ResolveDbPath()
     {
