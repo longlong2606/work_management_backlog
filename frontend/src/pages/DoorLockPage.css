@@ -371,6 +371,26 @@
 .dl-badge--ok { background: var(--success-bg); color: #047857; }
 .dl-badge--off { background: #f1f5f9; color: var(--text-muted); }
 .dl-badge--bad { background: var(--danger-bg); color: #b91c1c; }
+/* [THẺ KHÁCH] nhãn Bảo vệ / Khách cạnh tên */
+.dl-badge--type { height: 20px; padding: 0 8px; margin-left: 8px; font-size: 11px; background: #eef2ff; color: #4338ca; vertical-align: middle; }
+
+/* [THẺ KHÁCH] chọn loại người dùng thẻ */
+.dl-type { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dl-type legend { padding: 0; margin-bottom: 6px; }
+.dl-type-options { display: flex; gap: 6px; flex-wrap: wrap; }
+.dl-type-option { position: relative; }
+.dl-type-option input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.dl-type-option span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-full);
+  font-weight: 500;
+}
+.dl-type-option input:checked + span { background: var(--primary); border-color: var(--primary); color: #fff; }
+.dl-type-option input:focus-visible + span { outline: 2px solid var(--primary-glow); outline-offset: 2px; }
 
 /* Khung chờ tải */
 .dl-row--skeleton span {
