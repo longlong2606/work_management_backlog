@@ -5501,20 +5501,59 @@ app.MapGet("/api/cards/toggle", async (HttpContext ctx) => { var r = await Handl
 app.MapPost("/api/cards/{card_uid}/toggle", async (string card_uid, HttpContext ctx) => { var r = await HandleToggleCard(ctx, card_uid); await r.ExecuteAsync(ctx); });
 
 // Endpoint xem nhật ký lịch sử mở khóa cửa
-app.MapGet("/api/door/logs", (int? limit, HttpContext ctx) =>
+// [ESP-LOCK] Lọc theo ngày (Bao duyệt cách A): from/to = yyyy-MM-dd (giờ VN, như created_at), q = tìm theo tên lưu
+// trong lịch sử, uids = mã thẻ (dạng gọn, phân cách dấu phẩy) của người khớp tên trên web, offset = "Tải thêm".
+// Không truyền from/to: như cũ (lượt mới nhất). Lịch sử không giới hạn: mỗi lần chỉ lấy tối đa 500 dòng.
+app.MapGet("/api/door/logs", (int? limit, int? offset, string? from, string? to, string? q, string? uids, HttpContext ctx) =>
 {
     var maxRows = Math.Clamp(limit ?? 50, 1, 500);
+    var skip = Math.Max(offset ?? 0, 0);
+    var where = new List<string>();
+    var p = new DynamicParameters();
+    p.Add("limit", maxRows + 1);   // lấy dư 1 dòng để biết còn nữa không
+    p.Add("offset", skip);
+    object Bound(DateTime d) => Database.IsPostgres ? d : d.ToString("yyyy-MM-dd HH:mm:ss");
+    var fmt = System.Globalization.CultureInfo.InvariantCulture;
+    if (DateTime.TryParseExact(from, "yyyy-MM-dd", fmt, System.Globalization.DateTimeStyles.None, out var fromDay))
+    {
+        where.Add("created_at >= @from");
+        p.Add("from", Bound(fromDay));
+    }
+    if (DateTime.TryParseExact(to, "yyyy-MM-dd", fmt, System.Globalization.DateTimeStyles.None, out var toDay))
+    {
+        where.Add("created_at < @to");
+        p.Add("to", Bound(toDay.AddDays(1)));
+    }
+    var search = new List<string>();
+    if (!string.IsNullOrWhiteSpace(q))
+    {
+        search.Add("LOWER(COALESCE(card_holder, '')) LIKE @q");
+        p.Add("q", "%" + q.Trim().ToLowerInvariant() + "%");
+    }
+    var uidList = (uids ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(u => u.Replace(" ", "").ToUpperInvariant()).Take(500).ToList();
+    if (uidList.Count > 0)
+    {
+        search.Add("REPLACE(UPPER(COALESCE(card_uid, '')), ' ', '') IN @uids");
+        p.Add("uids", uidList);
+    }
+    if (search.Count > 0) where.Add("(" + string.Join(" OR ", search) + ")");
+
     using var conn = Database.GetConnection();
-    var logs = conn.Query<DoorAccessLogDto>(@"
+    var rows = conn.Query<DoorAccessLogDto>($@"
         SELECT id, key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at
         FROM door_access_logs
+        {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
         ORDER BY created_at DESC, id DESC -- [ESP-LOCK] theo giờ quẹt thật: lịch sử khóa gửi bù không chen lên đầu
-        LIMIT @limit", new { limit = maxRows });
+        LIMIT @limit OFFSET @offset", p).ToList();
 
+    var hasMore = rows.Count > maxRows;
+    var logs = hasMore ? rows.Take(maxRows).ToList() : rows;
     return Results.Ok(new
     {
         success = true,
-        total = logs.Count(),
+        total = logs.Count,
+        has_more = hasMore,
         logs
     });
 });

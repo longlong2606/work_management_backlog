@@ -442,6 +442,32 @@
   border-color: var(--text-main);
   color: #fff;
 }
+/* [LỌC NGÀY] khoảng ngày + tải thêm */
+.dl-range { align-items: center; }
+.dl-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.dl-date input {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 13px;
+}
+.dl-more {
+  display: flex;
+  justify-content: center;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
 .dl-day + .dl-day { border-top: 1px solid var(--border); }
 .dl-day-title {
   margin: 0;

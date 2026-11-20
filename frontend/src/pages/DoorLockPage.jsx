@@ -45,6 +45,18 @@ const initials = (name) =>
 
 const pad = (n) => String(n).padStart(2, "0");
 const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+// [LỌC NGÀY] khoảng ngày xem lịch sử: Hôm nay / 7 ngày / Tháng này / tự chọn (from, to dạng yyyy-MM-dd)
+const LOG_PAGE = 500; // mỗi lần lấy tối đa 500 lượt, còn nữa thì "Tải thêm"
+function presetRange(preset) {
+  const now = new Date();
+  const to = dayKey(now);
+  if (preset === "today") return { preset, from: to, to };
+  if (preset === "month") return { preset, from: dayKey(new Date(now.getFullYear(), now.getMonth(), 1)), to };
+  const d = new Date(now);
+  d.setDate(d.getDate() - 6);
+  return { preset: "7d", from: dayKey(d), to };
+}
 const parseLocal = (s) => {
   // "yyyy-MM-dd HH:mm:ss" (giờ Việt Nam do server ghi)
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(s || "");
@@ -174,6 +186,12 @@ export function DoorLockPage() {
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
   const [logFilter, setLogFilter] = useState("all"); // all | in | out | denied
+  // [LỌC NGÀY] lịch sử lấy theo khoảng ngày từ máy chủ; số liệu "hôm nay" lấy riêng
+  const [range, setRange] = useState(() => presetRange("7d"));
+  const [todayLogs, setTodayLogs] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [searchQ, setSearchQ] = useState(""); // ô tìm kiếm, chờ ngừng gõ 300 ms rồi mới hỏi máy chủ
 
   // [1 NÚT] Chế độ quản lý thẻ trên web: bấm "Quản lý thẻ" mới hiện thêm / đổi người / tạm khóa / xóa.
   // Khóa tự lấy danh sách mới ở lần thức dậy tiếp theo (không còn giữ nút 2 giây + Đồng ý / Lưu).
@@ -194,9 +212,14 @@ export function DoorLockPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, l, u] = await Promise.all([api.getDoorCards(), api.getDoorLogs(300), api.getUsers()]);
+      const today = dayKey(new Date());
+      const [c, l, u] = await Promise.all([
+        api.getDoorCards(),
+        api.getDoorLogs({ limit: LOG_PAGE, from: today, to: today }), // [LỌC NGÀY] cho số liệu hôm nay
+        api.getUsers(),
+      ]);
       setCards(c.cards || []);
-      setLogs(l.logs || []);
+      setTodayLogs(l.logs || []);
       setUsers((Array.isArray(u) ? u : []).slice().sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "vi")));
       setLoadError("");
     } catch (e) {
@@ -206,12 +229,56 @@ export function DoorLockPage() {
     }
   }, []);
 
+  // [LỌC NGÀY] Tìm theo tên: máy chủ tìm tên lưu trong lịch sử + mã thẻ của người khớp tên trong danh sách thẻ hiện tại
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+  const searchUids = useMemo(() => {
+    if (!searchQ) return "";
+    const f = fold(searchQ);
+    return cards.filter((c) => fold(holderLabel(c)).includes(f)).map((c) => compactUid(c.card_uid)).sort().join(",");
+  }, [searchQ, cards]);
+
+  // [LỌC NGÀY] Lịch sử trong khoảng ngày đã chọn; offset > 0 = "Tải thêm"
+  const fetchLogs = useCallback(
+    async (offset = 0) => {
+      const res = await api.getDoorLogs({
+        limit: LOG_PAGE, offset, from: range.from, to: range.to, q: searchQ, uids: searchUids,
+      });
+      setHasMore(!!res.has_more);
+      setLogs((prev) => (offset ? [...prev, ...(res.logs || [])] : res.logs || []));
+    },
+    [range.from, range.to, searchQ, searchUids]
+  );
+  const logsRef = useRef({ fetchLogs, count: 0 });
+  logsRef.current = { fetchLogs, count: logs.length };
+
+  useEffect(() => {
+    if (!canManage) return;
+    fetchLogs(0).catch((e) => setLoadError(e.message || "Không tải được lịch sử ra vào."));
+  }, [canManage, fetchLogs]);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      await fetchLogs(logs.length);
+    } catch (e) {
+      setLoadError(e.message || "Không tải được lịch sử ra vào.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   // Tải dữ liệu định kỳ (dừng khi tab trình duyệt bị ẩn)
   useEffect(() => {
     if (!canManage) return;
     loadAll();
     const slow = setInterval(() => {
-      if (!document.hidden) loadAll();
+      if (document.hidden) return;
+      loadAll();
+      // [LỌC NGÀY] đã bấm "Tải thêm" thì không làm mới lịch sử (khỏi mất phần đã tải)
+      if (logsRef.current.count <= LOG_PAGE) logsRef.current.fetchLogs(0).catch(() => {});
     }, 15000);
     return () => clearInterval(slow);
   }, [canManage, loadAll]);
@@ -347,9 +414,9 @@ export function DoorLockPage() {
     return m;
   }, [cards]);
 
-  const parsedLogs = useMemo(
-    () =>
-      logs
+  const parseLogs = useCallback(
+    (list) =>
+      list
         .map((l) => {
           const d = parseLocal(l.created_at);
           const info = classifyLog(l);
@@ -361,20 +428,21 @@ export function DoorLockPage() {
         .filter((l) => l.date)
         // Khóa có thể gửi muộn → sắp theo giờ quẹt thật, không theo thứ tự nhận
         .sort((a, b) => b.date - a.date || b.id - a.id),
-    [logs, holderByUid]
+    [holderByUid]
   );
+  const parsedLogs = useMemo(() => parseLogs(logs), [logs, parseLogs]);
 
   const today = dayKey(new Date());
   const stats = useMemo(() => {
-    const t = parsedLogs.filter((l) => dayKey(l.date) === today);
+    const t = parseLogs(todayLogs).filter((l) => dayKey(l.date) === today); // [LỌC NGÀY] không phụ thuộc khoảng đang xem
     return {
       active: cards.filter((c) => c.is_active === 1).length,
       total: cards.length,
       inToday: t.filter((l) => l.kind === "in").length,
       deniedToday: t.filter((l) => l.kind === "denied").length,
-      last: parsedLogs[0],
+      last: t[0],
     };
-  }, [parsedLogs, cards, today]);
+  }, [todayLogs, parseLogs, cards, today]);
 
   const q = query.trim().toLowerCase();
   const visibleCards = useMemo(
@@ -389,9 +457,8 @@ export function DoorLockPage() {
   );
 
   const groupedLogs = useMemo(() => {
-    const list = parsedLogs.filter(
-      (l) => (logFilter === "all" || l.kind === logFilter) && (!q || l.who.toLowerCase().includes(q))
-    );
+    // [LỌC NGÀY] tìm theo tên đã làm ở máy chủ (searchQ); ở đây chỉ lọc Vào / Ra / Từ chối
+    const list = parsedLogs.filter((l) => logFilter === "all" || l.kind === logFilter);
     const groups = [];
     list.forEach((l) => {
       const k = dayKey(l.date);
@@ -399,7 +466,7 @@ export function DoorLockPage() {
       groups[groups.length - 1].items.push(l);
     });
     return groups;
-  }, [parsedLogs, logFilter, q]);
+  }, [parsedLogs, logFilter]);
 
   // ----- Không có quyền -----
   if (!canManage) {
@@ -606,6 +673,36 @@ export function DoorLockPage() {
       {/* ===== Lịch sử ===== */}
       {tab === "history" && (
         <section className="dl-panel" aria-label="Lịch sử ra vào">
+          {/* [LỌC NGÀY] khoảng ngày */}
+          <div className="dl-chips dl-range" role="group" aria-label="Khoảng ngày">
+            {[
+              ["today", "Hôm nay"],
+              ["7d", "7 ngày"],
+              ["month", "Tháng này"],
+            ].map(([k, label]) => (
+              <button key={k} type="button" className="dl-chip" aria-pressed={range.preset === k} onClick={() => setRange(presetRange(k))}>
+                {label}
+              </button>
+            ))}
+            <label className="dl-date">
+              Từ
+              <input
+                type="date"
+                value={range.from}
+                max={range.to}
+                onChange={(e) => e.target.value && setRange((r) => ({ preset: "custom", from: e.target.value, to: r.to < e.target.value ? e.target.value : r.to }))}
+              />
+            </label>
+            <label className="dl-date">
+              Đến
+              <input
+                type="date"
+                value={range.to}
+                min={range.from}
+                onChange={(e) => e.target.value && setRange((r) => ({ preset: "custom", from: r.from > e.target.value ? e.target.value : r.from, to: e.target.value }))}
+              />
+            </label>
+          </div>
           <div className="dl-chips" role="group" aria-label="Lọc">
             {[
               ["all", "Tất cả"],
@@ -629,7 +726,7 @@ export function DoorLockPage() {
             <div className="dl-empty">
               <LogIn size={28} />
               <h2>Chưa có lượt ra vào</h2>
-              <p>{logFilter === "all" && !q ? "Lượt quẹt thẻ sẽ hiện ở đây sau khi khóa gửi lên." : "Không có lượt nào khớp bộ lọc."}</p>
+              <p>{logFilter === "all" && !q ? "Không có lượt quẹt nào trong khoảng ngày này." : "Không có lượt nào khớp bộ lọc."}</p>
               {(logFilter !== "all" || q) && (
                 <button type="button" className="dl-btn" onClick={() => { setLogFilter("all"); setQuery(""); }}>Xem tất cả</button>
               )}
@@ -666,6 +763,14 @@ export function DoorLockPage() {
                 </ul>
               </div>
             ))
+          )}
+          {/* [LỌC NGÀY] lịch sử không giới hạn: còn lượt cũ hơn trong khoảng ngày thì tải tiếp */}
+          {!loading && hasMore && (
+            <div className="dl-more">
+              <button type="button" className="dl-btn" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? "Đang tải…" : "Tải thêm lượt cũ hơn"}
+              </button>
+            </div>
           )}
         </section>
       )}

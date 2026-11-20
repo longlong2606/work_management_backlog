@@ -520,7 +520,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  getDoorLogs: (limit = 100) => request(`/door/logs?limit=${limit}`),
+  // [ESP-LOCK] số = lấy N lượt mới nhất; object = {limit, offset, from, to, q, uids[]} lọc theo ngày / người
+  getDoorLogs: (opts = 100) => {
+    const o = typeof opts === "number" ? { limit: opts } : opts;
+    const qs = new URLSearchParams();
+    Object.entries(o).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length)) return;
+      qs.set(k, Array.isArray(v) ? v.join(",") : String(v));
+    });
+    return request(`/door/logs?${qs}`);
+  },
   clearDoorLogs: () =>
     request("/door/logs", {
       method: "DELETE",
