@@ -184,7 +184,7 @@ export function DoorLockPage() {
 
   // Hộp thoại
   const [editing, setEditing] = useState(null); // null | {mode:'add'|'edit', card?}
-  const [form, setForm] = useState({ uid: "", user: null, note: "" });
+  const [form, setForm] = useState({ uid: "", type: "staff", user: null, name: "", note: "" });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
