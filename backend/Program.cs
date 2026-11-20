@@ -4762,8 +4762,11 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
         {
             using var conn = Database.GetConnection();
             cardInfo = conn.QueryFirstOrDefault<DoorCardDto>(
-                "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
+                "SELECT id, card_uid, card_holder, user_id, is_active, note, card_type, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
                 new { uid = card_uid });
+            // [ESP-LOCK] thẻ Bảo vệ/Khách: lịch sử ghi "Tên (Bảo vệ)" để nhìn là biết không phải Nhân sự
+            var typeLabel = DoorCardTypeLabel(cardInfo?.card_type);
+            if (cardInfo != null && typeLabel != null) cardInfo.card_holder = $"{cardInfo.card_holder} ({typeLabel})";
         }
         catch { }
 
@@ -4941,6 +4944,9 @@ bool IsDoorManagerAuthorized(HttpContext ctx, string? providedKey)
     return false;
 }
 
+// [ESP-LOCK] nhãn loại thẻ không thuộc Nhân sự; null = Nhân sự
+string? DoorCardTypeLabel(string? cardType) => cardType switch { "guard" => "Bảo vệ", "guest" => "Khách", _ => null };
+
 // 1. Thêm hoặc Cập nhật Thẻ
 async Task<IResult> HandleAddCard(HttpContext ctx)
 {
@@ -4953,6 +4959,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
     int? is_active = 1;
     if (int.TryParse(ctx.Request.Query["is_active"].FirstOrDefault(), out var actVal)) is_active = actVal;
     bool replaceOld = ctx.Request.Query["replace"].FirstOrDefault() is "1" or "true"; // [ESP-LOCK] thay thẻ cũ của người này
+    string? card_type = ctx.Request.Query["card_type"].FirstOrDefault(); // [ESP-LOCK] staff | guard | guest
 
     if (ctx.Request.HasJsonContentType())
     {
@@ -4968,6 +4975,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 user_id ??= body.user_id;
                 is_active = body.is_active ?? is_active;
                 replaceOld = replaceOld || body.replace == true; // [ESP-LOCK]
+                card_type ??= body.card_type;
             }
         }
         catch { }
@@ -4991,18 +4999,33 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
         }, statusCode: 400);
     }
 
+    // [ESP-LOCK] Loại thẻ: staff (Nhân sự, mặc định) | guard (Bảo vệ) | guest (Khách). Không gửi = giữ loại cũ.
+    card_type = string.IsNullOrWhiteSpace(card_type) ? null : card_type.Trim().ToLower();
+    if (card_type != null && card_type is not ("staff" or "guard" or "guest"))
+        return Results.Json(new { success = false, message = "card_type chỉ nhận staff, guard hoặc guest." }, statusCode: 400);
+    bool external = card_type is "guard" or "guest";   // không có trong Nhân sự
+    if (external)
+    {
+        if (string.IsNullOrWhiteSpace(card_holder))
+            return Results.Json(new { success = false, message = "Thẻ Bảo vệ/Khách cần nhập tên người dùng thẻ." }, statusCode: 400);
+        card_holder = card_holder.Trim();
+        user_id = null;
+    }
+    else if (user_id.HasValue) card_type = "staff";
+
     card_uid = card_uid.Trim().ToUpper();
     var nowDt = DateTime.SpecifyKind(DateTime.UtcNow.AddHours(7), DateTimeKind.Unspecified);
     object nowVal = Database.IsPostgres ? nowDt : nowDt.ToString("yyyy-MM-dd HH:mm:ss");
 
     using var conn = Database.GetConnection();
     var existing = conn.QueryFirstOrDefault<DoorCardDto>(
-        "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
+        "SELECT id, card_uid, card_holder, user_id, is_active, note, card_type, created_at, updated_at FROM door_cards WHERE UPPER(card_uid) = @uid",
         new { uid = card_uid });
 
     // [ESP-LOCK] Gắn thẻ với Nhân sự: người phải có trong bảng users, 1 người 1 thẻ.
     // Người đã có thẻ khác: cần replace=1 (web hỏi "Thay thẻ cũ?") thì xóa thẻ cũ rồi gắn thẻ này.
-    if (user_id.HasValue)
+    if (external) { }
+    else if (user_id.HasValue)
     {
         var fullName = conn.QueryFirstOrDefault<string>(
             "SELECT COALESCE(NULLIF(full_name, ''), username) FROM users WHERE id = @id", new { id = user_id.Value });
@@ -5010,7 +5033,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
             return Results.Json(new { success = false, message = "Người này không có trong Nhân sự." }, statusCode: 400);
 
         var other = conn.QueryFirstOrDefault<DoorCardDto>(
-            "SELECT id, card_uid, card_holder, user_id, is_active, note, created_at, updated_at FROM door_cards WHERE user_id = @u AND UPPER(card_uid) <> @uid",
+            "SELECT id, card_uid, card_holder, user_id, is_active, note, card_type, created_at, updated_at FROM door_cards WHERE user_id = @u AND UPPER(card_uid) <> @uid",
             new { u = user_id.Value, uid = card_uid });
         if (other != null)
         {
@@ -5026,9 +5049,9 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
         }
         card_holder = fullName;
     }
-    else if (existing?.user_id != null)
+    else if (existing?.user_id != null || (card_type == null && existing?.card_type is "guard" or "guest"))
     {
-        card_holder = null; // thẻ đã gắn người: khóa gửi tên tạm thì giữ nguyên tên người
+        card_holder = null; // thẻ đã gắn người / Bảo vệ / Khách: khóa gửi tên tạm thì giữ nguyên tên
     }
 
     if (existing != null)
@@ -5039,14 +5062,16 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 user_id = @uidVal,
                 is_active = @active,
                 note = @note,
+                card_type = @ctype,
                 updated_at = @now
             WHERE id = @id",
             new
             {
                 holder = card_holder ?? existing.card_holder,
-                uidVal = user_id ?? existing.user_id,
+                uidVal = external ? null : user_id ?? existing.user_id,   // [ESP-LOCK] đổi sang Bảo vệ/Khách thì bỏ gắn Nhân sự
                 active = is_active ?? existing.is_active,
                 note = note ?? existing.note,
+                ctype = card_type ?? existing.card_type ?? "staff",
                 now = nowVal,
                 id = existing.id
             });
@@ -5064,8 +5089,8 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
     else
     {
         conn.Execute(@"
-            INSERT INTO door_cards (card_uid, card_holder, user_id, is_active, note, created_at, updated_at)
-            VALUES (@card_uid, @holder, @uidVal, @active, @note, @now, @now)",
+            INSERT INTO door_cards (card_uid, card_holder, user_id, is_active, note, card_type, created_at, updated_at)
+            VALUES (@card_uid, @holder, @uidVal, @active, @note, @ctype, @now, @now)",
             new
             {
                 card_uid = card_uid,
@@ -5073,6 +5098,7 @@ async Task<IResult> HandleAddCard(HttpContext ctx)
                 uidVal = user_id,
                 active = is_active ?? 1,
                 note = note ?? "",
+                ctype = card_type ?? "staff",
                 now = nowVal
             });
 
@@ -5177,7 +5203,7 @@ async Task<IResult> HandleListCards(HttpContext ctx)
 
     using var conn = Database.GetConnection();
     // [ESP-LOCK] tên thẻ lấy theo Nhân sự khi thẻ đã gắn người
-    var sql = "SELECT c.id, c.card_uid, COALESCE(NULLIF(u.full_name, ''), c.card_holder) AS card_holder, c.user_id, c.is_active, c.note, c.created_at, c.updated_at FROM door_cards c LEFT JOIN users u ON u.id = c.user_id WHERE 1=1";
+    var sql = "SELECT c.id, c.card_uid, COALESCE(NULLIF(u.full_name, ''), c.card_holder) AS card_holder, c.user_id, c.is_active, c.note, c.card_type, c.created_at, c.updated_at FROM door_cards c LEFT JOIN users u ON u.id = c.user_id WHERE 1=1";
     var prms = new DynamicParameters();
 
     if (!string.IsNullOrWhiteSpace(search))
@@ -5411,7 +5437,7 @@ app.MapGet("/api/door/session", (HttpContext ctx) =>
     if (scans.Count > 0)
     {
         using var conn = Database.GetConnection();
-        foreach (var c in conn.Query<DoorCardDto>("SELECT c.id, c.card_uid, COALESCE(NULLIF(u.full_name, ''), c.card_holder) AS card_holder, c.user_id, c.is_active, c.note, c.created_at, c.updated_at FROM door_cards c LEFT JOIN users u ON u.id = c.user_id"))
+        foreach (var c in conn.Query<DoorCardDto>("SELECT c.id, c.card_uid, COALESCE(NULLIF(u.full_name, ''), c.card_holder) AS card_holder, c.user_id, c.is_active, c.note, c.card_type, c.created_at, c.updated_at FROM door_cards c LEFT JOIN users u ON u.id = c.user_id"))
             cardsByUid[new string((c.card_uid ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpper()] = c;
     }
     var scanViews = scans.Select(sc => new { sc.card_uid, sc.at, card = cardsByUid.GetValueOrDefault(sc.card_uid) });

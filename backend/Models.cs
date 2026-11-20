@@ -425,6 +425,7 @@ public class DoorCardDto
     public long? user_id { get; set; }
     public int is_active { get; set; } = 1;
     public string? note { get; set; }
+    public string? card_type { get; set; } // [ESP-LOCK] staff | guard | guest
     public string created_at { get; set; } = "";
     public string? updated_at { get; set; }
 }
@@ -438,6 +439,7 @@ public class CreateDoorCardRequest
     public string? note { get; set; }
     public string? key { get; set; }
     public bool? replace { get; set; } // [ESP-LOCK] người đã có thẻ: thay thẻ cũ
+    public string? card_type { get; set; } // [ESP-LOCK] staff | guard | guest
 }
 
 public class DeleteDoorCardRequest

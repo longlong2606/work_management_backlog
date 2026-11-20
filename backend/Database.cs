@@ -380,6 +380,7 @@ public static class Database
             // Backward compatibility and robust schema evolution for both PostgreSQL and SQLite
             EnsureColumn(conn, "door_access_logs", "card_uid", "TEXT");
             EnsureColumn(conn, "door_access_logs", "card_holder", "TEXT");
+            EnsureColumn(conn, "door_cards", "card_type", "TEXT DEFAULT 'staff'"); // [ESP-LOCK] staff | guard | guest
             EnsureColumn(conn, "shift_registrations", "target_shift_id", "INTEGER");
             EnsureColumn(conn, "shift_registrations", "target_work_date", "TEXT");
             EnsureColumn(conn, "shift_registrations", "request_reason", "TEXT");

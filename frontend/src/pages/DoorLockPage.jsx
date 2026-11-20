@@ -30,6 +30,10 @@ const compactUid = (uid) => (uid || "").replace(/[^0-9a-z]/gi, "").toUpperCase()
 const prettyUid = (uid) => compactUid(uid).replace(/(..)(?=.)/g, "$1 ");
 // Tên tạm khóa tự đặt khi thêm bằng thẻ Master: "The moi 19/11 14:05"
 const isTempName = (name) => !name || /^th[eẻ] m[oớ]i\b/i.test(name.trim());
+// Loại người dùng thẻ: Nhân sự (gắn với tài khoản) hoặc Bảo vệ / Khách (chỉ có tên, không có trong Nhân sự)
+const TYPE_LABEL = { staff: "Nhân sự", guard: "Bảo vệ", guest: "Khách" };
+const isExternal = (c) => c.card_type === "guard" || c.card_type === "guest";
+const holderLabel = (c) => (isExternal(c) ? `${c.card_holder || ""} (${TYPE_LABEL[c.card_type]})` : c.card_holder || "");
 const initials = (name) =>
   (name || "?")
     .trim()
@@ -241,12 +245,19 @@ export function DoorLockPage() {
 
   // ----- Thẻ -----
   const openAdd = (uid = "") => {
-    setForm({ uid: typeof uid === "string" ? prettyUid(uid) : "", user: null, note: "" });
+    setForm({ uid: typeof uid === "string" ? prettyUid(uid) : "", type: "staff", user: null, name: "", note: "" });
     setFormError("");
     setEditing({ mode: "add" });
   };
   const openEdit = (card) => {
-    setForm({ uid: card.card_uid, user: users.find((u) => u.id === card.user_id) || null, note: card.note || "" });
+    const type = isExternal(card) ? card.card_type : "staff";
+    setForm({
+      uid: card.card_uid,
+      type,
+      user: users.find((u) => u.id === card.user_id) || null,
+      name: type === "staff" || isTempName(card.card_holder) ? "" : card.card_holder || "",
+      note: card.note || "",
+    });
     setFormError("");
     setEditing({ mode: "edit", card });
   };
@@ -258,7 +269,12 @@ export function DoorLockPage() {
       setFormError("Mã thẻ gồm 8–20 ký tự 0–9, A–F. Ví dụ: 29 02 05 B3");
       return;
     }
-    if (!form.user) {
+    const external = form.type !== "staff";
+    if (external && !form.name.trim()) {
+      setFormError(`Nhập tên ${TYPE_LABEL[form.type].toLowerCase()} dùng thẻ.`);
+      return;
+    }
+    if (!external && !form.user) {
       setFormError("Chọn người dùng thẻ trong danh sách Nhân sự.");
       return;
     }
@@ -266,10 +282,26 @@ export function DoorLockPage() {
       setFormError("Thẻ này đã có trong danh sách.");
       return;
     }
+    // Bảo vệ / Khách: không có trong Nhân sự, không áp luật 1 người 1 thẻ
+    if (external) {
+      sendLink(
+        {
+          card_uid: editing.mode === "edit" ? editing.card.card_uid : uid,
+          card_type: form.type,
+          card_holder: form.name.trim(),
+          note: form.note.trim(),
+          is_active: editing.mode === "edit" ? editing.card.is_active : 1,
+        },
+        "dialog",
+        false
+      );
+      return;
+    }
     linkCard(
       {
         card_uid: editing.mode === "edit" ? editing.card.card_uid : uid,
         user_id: form.user.id,
+        card_type: "staff",
         card_holder: form.user.full_name,
         note: form.note.trim(),
         // Đổi người không được làm thẻ đang tạm khóa tự mở lại
@@ -311,7 +343,7 @@ export function DoorLockPage() {
   // ----- Số liệu -----
   const holderByUid = useMemo(() => {
     const m = {};
-    cards.forEach((c) => (m[compactUid(c.card_uid)] = c.card_holder));
+    cards.forEach((c) => (m[compactUid(c.card_uid)] = holderLabel(c)));
     return m;
   }, [cards]);
 
@@ -350,7 +382,7 @@ export function DoorLockPage() {
       cards.filter(
         (c) =>
           !q ||
-          (c.card_holder || "").toLowerCase().includes(q) ||
+          holderLabel(c).toLowerCase().includes(q) ||
           compactUid(c.card_uid).toLowerCase().includes(q.replace(/\s/g, ""))
       ),
     [cards, q]
@@ -501,7 +533,8 @@ export function DoorLockPage() {
                 <span>Người dùng</span><span>Trạng thái</span><span>Ngày thêm</span><span />
               </li>
               {visibleCards.map((c) => {
-                const temp = !c.user_id;   // thẻ chưa gắn người trong Nhân sự
+                const ext = isExternal(c);   // thẻ Bảo vệ / Khách
+                const temp = !c.user_id && !ext;   // thẻ chưa gắn người trong Nhân sự
                 const oldName = temp && !isTempName(c.card_holder) ? c.card_holder : "";   // tên gõ tay trước đây
                 const added = parseLocal(c.created_at);
                 return (
@@ -515,7 +548,10 @@ export function DoorLockPage() {
                           ) : temp ? (
                             <span className="dl-muted">Chưa gắn người</span>
                           ) : (
-                            c.card_holder
+                            <>
+                              {c.card_holder}
+                              {ext && <span className="dl-badge dl-badge--type">{TYPE_LABEL[c.card_type]}</span>}
+                            </>
                           )}
                         </span>
                         <span className="dl-uid dl-num">
@@ -655,18 +691,48 @@ export function DoorLockPage() {
             />
             {editing?.mode === "add" && <small>Mã in trên thẻ, hoặc chạm thẻ vào khóa trong chế độ quản lý thẻ.</small>}
           </label>
-          <div className="dl-field">
-            <span>Người dùng thẻ</span>
-            <PersonPicker
-              users={users}
-              cards={cards}
-              value={form.user}
-              onChange={(u) => setForm((f) => ({ ...f, user: u }))}
-              currentUid={form.uid}
-              autoFocus={editing?.mode === "edit" || !!form.uid}
-            />
-            <small>Chỉ chọn được người có trong Nhân sự. Mỗi người 1 thẻ.</small>
-          </div>
+          <fieldset className="dl-field dl-type">
+            <legend>Loại người dùng</legend>
+            <div className="dl-type-options">
+              {Object.entries(TYPE_LABEL).map(([v, label]) => (
+                <label key={v} className="dl-type-option">
+                  <input
+                    type="radio"
+                    name="card_type"
+                    value={v}
+                    checked={form.type === v}
+                    onChange={() => setForm((f) => ({ ...f, type: v }))}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          {form.type === "staff" ? (
+            <div className="dl-field">
+              <span>Người dùng thẻ</span>
+              <PersonPicker
+                users={users}
+                cards={cards}
+                value={form.user}
+                onChange={(u) => setForm((f) => ({ ...f, user: u }))}
+                currentUid={form.uid}
+                autoFocus={editing?.mode === "edit" || !!form.uid}
+              />
+              <small>Chỉ chọn được người có trong Nhân sự. Mỗi người 1 thẻ.</small>
+            </div>
+          ) : (
+            <label className="dl-field">
+              <span>Tên {TYPE_LABEL[form.type].toLowerCase()}</span>
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder={form.type === "guard" ? "VD: Anh Tuấn – ca đêm" : "VD: Chị Lan – đối tác ABC"}
+                autoComplete="off"
+              />
+              <small>Không cần có trong Nhân sự. Khách về thì tạm khóa hoặc xóa thẻ.</small>
+            </label>
+          )}
           <label className="dl-field">
             <span>Ghi chú <em>(không bắt buộc)</em></span>
             <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="VD: Sinh viên K67" autoComplete="off" />
@@ -708,7 +774,7 @@ export function DoorLockPage() {
       <Modal alert open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Xóa thẻ?">
         <p className="dl-dialog-body">
           Thẻ <strong className="dl-num">{prettyUid(confirmDelete?.card_uid)}</strong> của{" "}
-          <strong>{!confirmDelete?.user_id ? "người chưa gắn" : confirmDelete?.card_holder}</strong> sẽ không mở được cửa nữa.
+          <strong>{confirmDelete && isExternal(confirmDelete) ? holderLabel(confirmDelete) : !confirmDelete?.user_id ? "người chưa gắn" : confirmDelete?.card_holder}</strong> sẽ không mở được cửa nữa.
           Lịch sử ra vào cũ vẫn được giữ.
         </p>
         <p className="dl-dialog-note">Chỉ muốn chặn tạm thời? Dùng nút khóa thay vì xóa.</p>
