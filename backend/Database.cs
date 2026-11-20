@@ -381,6 +381,8 @@ public static class Database
             EnsureColumn(conn, "door_access_logs", "card_uid", "TEXT");
             EnsureColumn(conn, "door_access_logs", "card_holder", "TEXT");
             EnsureColumn(conn, "door_cards", "card_type", "TEXT DEFAULT 'staff'"); // [ESP-LOCK] staff | guard | guest
+            // [ESP-LOCK] khóa gửi bù nhiều lịch sử: kiểm tra trùng (card_uid, device_timestamp) không phải quét cả bảng
+            conn.Execute("CREATE INDEX IF NOT EXISTS idx_door_logs_uid_ts ON door_access_logs (card_uid, device_timestamp)");
             EnsureColumn(conn, "shift_registrations", "target_shift_id", "INTEGER");
             EnsureColumn(conn, "shift_registrations", "target_work_date", "TEXT");
             EnsureColumn(conn, "shift_registrations", "request_reason", "TEXT");

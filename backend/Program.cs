@@ -5508,7 +5508,7 @@ app.MapGet("/api/door/logs", (int? limit, HttpContext ctx) =>
     var logs = conn.Query<DoorAccessLogDto>(@"
         SELECT id, key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at
         FROM door_access_logs
-        ORDER BY id DESC
+        ORDER BY created_at DESC, id DESC -- [ESP-LOCK] theo giờ quẹt thật: lịch sử khóa gửi bù không chen lên đầu
         LIMIT @limit", new { limit = maxRows });
 
     return Results.Ok(new
