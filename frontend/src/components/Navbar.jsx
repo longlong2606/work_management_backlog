@@ -150,7 +150,7 @@ export function Navbar({ activeTab, setActiveTab, children }) {
   // 2. Menu hệ thống & quản trị
   const systemItems = [
     { id: "history", label: "Lịch sử ca", icon: History, desc: "Nhật ký đăng ký, hủy & đổi ca" },
-    { id: "door", label: "Khóa cửa (ESP8266)", icon: Key, desc: "Xác thực API & điều khiển khóa IoT" },
+    ...(isAdmin ? [{ id: "door", label: "Khóa cửa (ESP8266)", icon: Key, desc: "Xác thực API & điều khiển khóa IoT" }] : []),   // [BẢO MẬT] chỉ admin
     ...(isAdmin || isLeader
       ? [
           { id: "emails", label: "Nhật ký Email", icon: Mail, desc: "Danh sách email đã gửi ra ngoài" },

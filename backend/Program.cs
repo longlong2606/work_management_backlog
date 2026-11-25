@@ -4924,20 +4924,11 @@ bool IsDoorManagerAuthorized(HttpContext ctx, string? providedKey)
     if (DoorSecurity.VerifyDevice(ctx, providedKey, expectedKey) != null)   // [BẢO MẬT] thiết bị khóa
         return true;
 
-    if (ctx.Request.Headers.TryGetValue("X-Door-Key", out var hKey) && string.Equals(hKey.ToString().Trim(), expectedKey, StringComparison.Ordinal))
-        return true;
-
-    var authH = ctx.Request.Headers.Authorization.ToString();
-    if (!string.IsNullOrWhiteSpace(authH) && authH.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-    {
-        var token = authH.Substring(7).Trim();
-        if (string.Equals(token, expectedKey, StringComparison.Ordinal)) return true;
-    }
-
+    // [BẢO MẬT] không còn nhận mã khóa qua header X-Door-Key / Bearer; chỉ thiết bị (ký HMAC) hoặc admin đăng nhập
     try
     {
         var u = AuthService.GetCurrentUser(ctx);
-        if (u != null && (u.role == "admin" || u.role == "leader")) return true;
+        if (u != null && u.role == "admin") return true;
     }
     catch { }
 
@@ -5401,7 +5392,7 @@ IResult HandleEspSessionScan(HttpContext ctx, string? key, string? card_uid)
     }
 }
 
-// --- Phía web (admin/leader đăng nhập) ---
+// --- Phía web (admin đăng nhập) ---
 object DoorSessionView(DoorSession s, long now)
 {
     long left = s.status == "pending" ? DoorSessionStore.PENDING_TIMEOUT - (now - s.created_at)
@@ -5419,7 +5410,7 @@ object DoorSessionView(DoorSession s, long now)
 app.MapGet("/api/door/session", (HttpContext ctx) =>
 {
     var u = AuthService.GetCurrentUser(ctx);
-    if (u == null || (u.role != "admin" && u.role != "leader")) return Results.StatusCode(403);
+    if (u == null || u.role != "admin") return Results.StatusCode(403);   // [BẢO MẬT] chỉ admin
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     object? view = null;
     List<DoorScan> scans = new();
@@ -5448,7 +5439,7 @@ app.MapGet("/api/door/session", (HttpContext ctx) =>
 app.MapPost("/api/door/session/{id}/{op}", (string id, string op, HttpContext ctx) =>
 {
     var u = AuthService.GetCurrentUser(ctx);
-    if (u == null || (u.role != "admin" && u.role != "leader")) return Results.StatusCode(403);
+    if (u == null || u.role != "admin") return Results.StatusCode(403);   // [BẢO MẬT] chỉ admin
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     lock (DoorSessionStore.Sync)
     {
@@ -5506,6 +5497,8 @@ app.MapPost("/api/cards/{card_uid}/toggle", async (string card_uid, HttpContext 
 // Không truyền from/to: như cũ (lượt mới nhất). Lịch sử không giới hạn: mỗi lần chỉ lấy tối đa 500 dòng.
 app.MapGet("/api/door/logs", (int? limit, int? offset, string? from, string? to, string? q, string? uids, HttpContext ctx) =>
 {
+    var me = AuthService.GetCurrentUser(ctx);   // [BẢO MẬT] lịch sử ra vào chỉ admin
+    if (me == null || me.role != "admin") return Results.StatusCode(403);
     var maxRows = Math.Clamp(limit ?? 50, 1, 500);
     var skip = Math.Max(offset ?? 0, 0);
     var where = new List<string>();
@@ -5559,20 +5552,21 @@ app.MapGet("/api/door/logs", (int? limit, int? offset, string? from, string? to,
 });
 
 // Endpoint lấy cấu hình khóa cửa hiện tại
-app.MapGet("/api/door/settings", (HttpContext ctx) =>
+// [BẢO MẬT] Không trả mã khóa cũ. Bí mật HMAC chỉ trả khi admin bấm "Hiện" (reveal=1).
+app.MapGet("/api/door/settings", (HttpContext ctx, int? reveal) =>
 {
+    var u = AuthService.GetCurrentUser(ctx);
+    if (u == null || u.role != "admin") return Results.StatusCode(403);
     using var conn = Database.GetConnection();
-    var key = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'") ?? DEFAULT_DOOR_SECRET_KEY;
     var durStr = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_relay_duration'") ?? "5";
     int.TryParse(durStr, out var dur);
 
     return Results.Ok(new
     {
         success = true,
-        key = key.Trim(),
         relay_duration = dur > 0 ? dur : 5,
-        default_key = DEFAULT_DOOR_SECRET_KEY,
-        api_url = "/api/?key=" + key.Trim() + "&macid=<MAC>&timestamp=<TIME>&card_uid=<CARD_UID>"
+        legacy_key = DoorSecurity.LegacyKeyEnabled(conn) ? "on" : "off",
+        hmac_secret = reveal == 1 ? DoorSecurity.GetOrCreateSecret(conn) : null
     });
 });
 
@@ -5580,7 +5574,7 @@ app.MapGet("/api/door/settings", (HttpContext ctx) =>
 app.MapPost("/api/door/settings", (DoorSettingsRequest req, HttpContext ctx) =>
 {
     var currentUser = AuthService.GetCurrentUser(ctx);
-    if (currentUser == null || (currentUser.role != "admin" && currentUser.role != "leader"))
+    if (currentUser == null || currentUser.role != "admin")   // [BẢO MẬT] chỉ admin
     {
         return Results.StatusCode(403);
     }
@@ -5589,6 +5583,10 @@ app.MapPost("/api/door/settings", (DoorSettingsRequest req, HttpContext ctx) =>
     if (!string.IsNullOrWhiteSpace(req.key))
     {
         conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_secret_key', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.key.Trim() });
+    }
+    if (req.legacy_key is "on" or "off")   // [BẢO MẬT] tắt mã cũ key= sau khi khóa đã nạp bản ký HMAC
+    {
+        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_legacy_key', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.legacy_key });
     }
     if (req.relay_duration.HasValue && req.relay_duration.Value > 0)
     {
@@ -5599,39 +5597,6 @@ app.MapPost("/api/door/settings", (DoorSettingsRequest req, HttpContext ctx) =>
 });
 
 // Endpoint mở khóa cửa từ xa từ giao diện web (Admin Remote Unlock)
-app.MapPost("/api/door/unlock-remote", (HttpContext ctx) =>
-{
-    var currentUser = AuthService.GetCurrentUser(ctx);
-    if (currentUser == null) return Results.Unauthorized();
-
-    var clientIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "web-admin";
-    using var conn = Database.GetConnection();
-    var key = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'") ?? DEFAULT_DOOR_SECRET_KEY;
-
-    var localNowUnlock = DateTime.UtcNow.AddHours(7).ToString("yyyy-MM-dd HH:mm:ss");
-    object caValUnlock = Database.IsPostgres 
-        ? DateTime.SpecifyKind(DateTime.UtcNow.AddHours(7), DateTimeKind.Unspecified) 
-        : localNowUnlock;
-    conn.Execute(@"
-        INSERT INTO door_access_logs (key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at)
-        VALUES (@k, 'WEB_REMOTE_ADMIN', 'ADMIN_REMOTE', @cholder, @t, 'granted', 'unlock', @msg, @ip, @ca)",
-        new
-        {
-            k = key,
-            cholder = currentUser.full_name ?? currentUser.username,
-            t = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
-            msg = $"Mở khóa từ xa bởi người dùng: {currentUser.full_name} (@{currentUser.username})",
-            ip = clientIp,
-            ca = caValUnlock
-        });
-
-    return Results.Ok(new
-    {
-        success = true,
-        status = "unlock",
-        message = $"Đã kích hoạt lệnh mở khóa cửa từ xa bởi {currentUser.full_name}!"
-    });
-});
 
 // Endpoint xóa nhật ký mở khóa cửa
 app.MapDelete("/api/door/logs", (HttpContext ctx) =>

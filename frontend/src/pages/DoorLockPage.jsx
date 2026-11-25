@@ -177,7 +177,7 @@ function PersonPicker({ users, cards, value, onChange, currentUid = "", autoFocu
 // ---------- Trang ----------
 export function DoorLockPage() {
   const { user } = useAuth();
-  const canManage = user?.role === "admin" || user?.role === "leader";
+  const canManage = user?.role === "admin";   // [BẢO MẬT] chỉ admin (leader không còn quyền)
 
   const [tab, setTab] = useState("cards"); // cards | history
   const [cards, setCards] = useState([]);
@@ -209,6 +209,31 @@ export function DoorLockPage() {
   const [confirmReplace, setConfirmReplace] = useState(null); // {payload, user, oldUid, source}
   const [rowBusy, setRowBusy] = useState(null);
   const [rowError, setRowError] = useState({});
+
+  // [BẢO MẬT] Cài đặt bảo mật khóa: trạng thái mã cũ key= và (khi bấm Hiện) bí mật HMAC
+  const [sec, setSec] = useState(null);
+  const [secShown, setSecShown] = useState("");
+  useEffect(() => {
+    if (canManage) api.getDoorSettings().then(setSec).catch(() => {});
+  }, [canManage]);
+  const toggleLegacy = async () => {
+    const next = sec?.legacy_key === "on" ? "off" : "on";
+    try {
+      await api.updateDoorSettings({ legacy_key: next });
+      setSec({ ...sec, legacy_key: next });
+    } catch (e) {
+      setLoadError(e.message || "Không đổi được mã cũ.");
+    }
+  };
+  const toggleSecret = async () => {
+    if (secShown) return setSecShown("");
+    try {
+      const r = await api.getDoorSettings(true);
+      setSecShown(r.hmac_secret || "");
+    } catch (e) {
+      setLoadError(e.message || "Không lấy được bí mật.");
+    }
+  };
 
   const loadAll = useCallback(async () => {
     try {
@@ -533,6 +558,23 @@ export function DoorLockPage() {
           <span className="dl-stat-hint">{stats.deniedToday > 0 ? "Xem trong Lịch sử ra vào" : "Không có"}</span>
         </div>
       </section>
+      {/* [BẢO MẬT] khung cài đặt bảo mật (chỉ admin) */}
+      {canManage && sec && (
+        <section className="dl-panel dl-sec" aria-label="Bảo mật khóa">
+          <div className="dl-sec-row">
+            <span>Mã cũ <code>key=</code> (chỉ trong mạng lab): <strong>{sec.legacy_key === "on" ? "đang bật" : "đã tắt"}</strong></span>
+            <button type="button" className="dl-btn" onClick={toggleLegacy}>
+              {sec.legacy_key === "on" ? "Tắt mã cũ" : "Bật mã cũ"}
+            </button>
+          </div>
+          <div className="dl-sec-row">
+            <span>Bí mật HMAC: chép vào <code>secrets.h</code> của khóa, không chia sẻ</span>
+            <button type="button" className="dl-btn" onClick={toggleSecret}>{secShown ? "Ẩn" : "Hiện"}</button>
+          </div>
+          {secShown && <code className="dl-sec-code">{secShown}</code>}
+        </section>
+      )}
+
       {/* Tab + công cụ */}
       <div className="dl-toolbar">
         <div className="dl-tabs" role="tablist" aria-label="Nội dung">

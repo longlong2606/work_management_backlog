@@ -458,7 +458,7 @@ public class UpdateDoorCardRequest
     public string? key { get; set; }
 }
 
-public record DoorSettingsRequest(string? key, int? relay_duration);
+public record DoorSettingsRequest(string? key, int? relay_duration, string? legacy_key);
 
 // [ESP-LOCK] Phiên quản lý thẻ: giữ nút thoát hiểm 3s → web duyệt → sửa thẻ → Lưu.
 // Lưu trong RAM (phiên ngắn, tối đa ~11 phút); server khởi động lại thì phiên mất, khóa tự ngủ lại sau 30s.
