@@ -29,6 +29,7 @@ builder.Services.AddSwaggerGen();
 var app = builder.Build();
 
 app.UseCors("AllowAll");
+DoorSecurity.UseDeviceResponseSigning(app);   // [BẢO MẬT] ký trả lời cho khóa
 
 // Enable Swagger UI
 app.UseSwagger();
@@ -4737,7 +4738,7 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
     }
     catch { }
 
-    bool isKeyValid = !string.IsNullOrEmpty(key) && string.Equals(key.Trim(), expectedKey, StringComparison.Ordinal);
+    bool isKeyValid = DoorSecurity.VerifyDevice(ctx, key, expectedKey) != null;   // [BẢO MẬT] chữ ký HMAC hoặc mã cũ
 
     // 3. Kiểm tra thẻ RFID nếu có truyền card_uid
     bool isGranted = false;
@@ -4875,7 +4876,6 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
             status = "unlock",
             access = "granted",
             message = statusMessage,
-            key = expectedKey,
             card_uid = card_uid,
             card_holder = cardHolder,
             macid = macid ?? "N/A",
@@ -4921,7 +4921,7 @@ bool IsDoorManagerAuthorized(HttpContext ctx, string? providedKey)
     }
     catch { }
 
-    if (!string.IsNullOrWhiteSpace(providedKey) && string.Equals(providedKey.Trim(), expectedKey, StringComparison.Ordinal))
+    if (DoorSecurity.VerifyDevice(ctx, providedKey, expectedKey) != null)   // [BẢO MẬT] thiết bị khóa
         return true;
 
     if (ctx.Request.Headers.TryGetValue("X-Door-Key", out var hKey) && string.Equals(hKey.ToString().Trim(), expectedKey, StringComparison.Ordinal))
