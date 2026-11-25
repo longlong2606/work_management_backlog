@@ -1445,8 +1445,10 @@ app.MapPost("/api/auth/forgot-password", (ForgotPasswordRequest req) =>
     });
 });
 
-app.MapPost("/api/auth/login", (LoginRequest req) =>
+app.MapPost("/api/auth/login", (LoginRequest req, HttpContext ctx) =>
 {
+    var ip = DoorSecurity.ClientIp(ctx);   // [BẢO MẬT] chặn đăng nhập sai theo IP
+    if (DoorSecurity.LoginBlocked(ip)) return Results.Json(new { detail = "Sai mật khẩu quá nhiều lần, thử lại sau 15 phút." }, statusCode: 429);
     using var conn = Database.GetConnection();
     var user = conn.QueryFirstOrDefault<UserDto>(@"
         SELECT u.id, u.username, u.full_name, u.email, u.phone, u.role, u.department, u.status,
@@ -1466,8 +1468,10 @@ app.MapPost("/api/auth/login", (LoginRequest req) =>
 
     if (user == null || userEntity == null || !Database.VerifyPassword(req.password, userEntity.password_hash))
     {
+        DoorSecurity.LoginFailed(ip);   // [BẢO MẬT]
         return Results.BadRequest(new { detail = "Tên đăng nhập hoặc mật khẩu không chính xác" });
     }
+    DoorSecurity.LoginSucceeded(ip);   // [BẢO MẬT]
 
     user.can_manage_staff = (user.role == "admin");
 

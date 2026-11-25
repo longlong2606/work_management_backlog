@@ -33,6 +33,27 @@ public static class DoorSecurity
     static string? Setting(IDbConnection conn, string key) =>
         conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = @k", new { k = key });
 
+    // [BẢO MẬT] Chặn đăng nhập sai: 5 lần sai trong 15 phút (trượt) thì chặn IP đó. Bộ đếm trong RAM.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<DateTime>> loginFails = new();
+
+    public static bool LoginBlocked(string ip)
+    {
+        if (!loginFails.TryGetValue(ip, out var list)) return false;
+        lock (list)
+        {
+            list.RemoveAll(t => t < DateTime.UtcNow.AddMinutes(-15));
+            return list.Count >= 5;
+        }
+    }
+
+    public static void LoginFailed(string ip)
+    {
+        var list = loginFails.GetOrAdd(ip, _ => new List<DateTime>());
+        lock (list) list.Add(DateTime.UtcNow);
+    }
+
+    public static void LoginSucceeded(string ip) => loginFails.TryRemove(ip, out _);
+
     public static bool LegacyKeyEnabled(IDbConnection conn) => Setting(conn, "door_legacy_key") != "off";
 
     // Trả ctr (>0) nếu chữ ký hợp lệ và ctr mới hơn lần trước; 0 nếu mã cũ key= đúng (mạng lab, còn bật); null nếu sai.
