@@ -5524,8 +5524,10 @@ app.MapGet("/api/door/logs", (int? limit, int? offset, string? from, string? to,
     if (search.Count > 0) where.Add("(" + string.Join(" OR ", search) + ")");
 
     using var conn = Database.GetConnection();
+    // [POSTGRES] PostgreSQL trả giờ dạng "11/25/2026 20:41:20"; giao diện cần "yyyy-MM-dd HH:mm:ss" như SQLite
+    var caSel = Database.IsPostgres ? "to_char(created_at, 'YYYY-MM-DD HH24:MI:SS')" : "created_at";
     var rows = conn.Query<DoorAccessLogDto>($@"
-        SELECT id, key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, created_at
+        SELECT id, key_used, macid, card_uid, card_holder, device_timestamp, status, action, message, ip_address, {caSel} AS created_at
         FROM door_access_logs
         {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
         ORDER BY created_at DESC, id DESC -- [ESP-LOCK] theo giờ quẹt thật: lịch sử khóa gửi bù không chen lên đầu
