@@ -74,11 +74,15 @@ public static class DoorSecurity
             var expect = Sign(GetOrCreateSecret(conn), raw[..cut]);
             if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expect), Encoding.UTF8.GetBytes(sig.ToLowerInvariant())))
                 return null;
+            // Mốc riêng từng thiết bị: "dev" nằm trong phần đã ký nên không giả được. Không có dev = khóa thật.
+            // (Trước đây dùng chung 1 mốc với test: test lỗi giữa chừng để lại mốc lớn là khóa bị chặn.)
+            var dev = ctx.Request.Query["dev"].FirstOrDefault();
+            var ctrKey = "door_ctr:" + (string.IsNullOrWhiteSpace(dev) ? "lock" : dev.Trim());
             lock (ctrGate)
             {
-                var last = long.TryParse(Setting(conn, "door_last_ctr"), out var l) ? l : 0;
+                var last = long.TryParse(Setting(conn, ctrKey), out var l) ? l : 0;
                 if (ctr <= last) return null;   // chép lại gói cũ
-                conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_last_ctr', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = ctr.ToString() });
+                conn.Execute("INSERT INTO system_settings (key, value) VALUES (@k, @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { k = ctrKey, v = ctr.ToString() });
             }
             ctx.Items["door_ctr"] = ctr;
             return ctr;
@@ -95,11 +99,17 @@ public static class DoorSecurity
         // Tạo bí mật sau khi DB đã sẵn sàng, để admin/test đọc được
         app.Lifetime.ApplicationStarted.Register(() =>
         {
-            try { using var c = Database.GetConnection(); GetOrCreateSecret(c); }
+            try
+            {
+                using var c = Database.GetConnection();
+                GetOrCreateSecret(c);
+                c.Execute("DELETE FROM system_settings WHERE key = 'door_last_ctr'");   // mốc chung cũ, không dùng nữa
+            }
             catch (Exception ex) { Console.WriteLine("[BẢO MẬT] không tạo được bí mật HMAC: " + ex.Message); }
         });
         app.Use(async (ctx, next) =>
         {
+            if (!ctx.Request.Query.ContainsKey("sig")) { await next(); return; }   // chỉ đệm trả lời cho lệnh đã ký
             var real = ctx.Response.Body;
             using var buf = new MemoryStream();
             ctx.Response.Body = buf;
