@@ -147,6 +147,23 @@ npm run dev
 
 ---
 
+## 🔒 Mở web qua HTTPS từ bên ngoài (tunnel nhanh Cloudflare)
+
+1. Chạy web như thường (cổng `8000`).
+2. Mở PowerShell, chạy:
+   ```powershell
+   & "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:8000
+   ```
+3. Lấy link `https://<ngẫu nhiên>.trycloudflare.com` nó in ra. Link **đổi mỗi lần chạy lại**; giữ cửa sổ mở suốt lúc dùng.
+
+Lưu ý bảo mật:
+- Admin ở ngoài lab luôn vào bằng link HTTPS này. Vào `http://192.168.1.195:8000` thì mật khẩu đi qua WiFi lab dạng chữ thường.
+- Khóa cửa (ESP8266) vẫn gọi `http://192.168.1.195:8000/api/` trong mạng lab, ký HMAC từng lệnh. Yêu cầu đi qua tunnel (có header `Cf-Connecting-IP`) không được dùng quyền thiết bị khóa.
+- Bí mật HMAC: trang Khóa cửa → **Bảo mật khóa** → Hiện; chép vào `secrets.h` của firmware. Đổi bí mật thì phải nạp lại firmware.
+- Đăng nhập sai 5 lần / 15 phút / IP thì bị chặn tạm (429).
+
+---
+
 ## 🔑 Tài Khoản Đăng Nhập Mặc Định
 
 | Vai trò | Tên đăng nhập | Mật khẩu | Điểm CP mẫu | Cấp bậc cống hiến |
