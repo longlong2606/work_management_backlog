@@ -514,7 +514,7 @@ export const api = {
   getUserCpHistory: (userId) => request(`/cp/history/${userId}?_t=${Date.now()}`),
 
   // Smart Door Lock & RFID Cards (Khóa cửa & Thẻ từ thông minh IoT)
-  getDoorSettings: (reveal = false) => request(`/door/settings${reveal ? "?reveal=1" : ""}`),
+  getDoorSettings: () => request("/door/settings"),
   updateDoorSettings: (data) =>
     request("/door/settings", {
       method: "POST",

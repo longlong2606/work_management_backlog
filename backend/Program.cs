@@ -4640,7 +4640,6 @@ app.MapPost("/api/emails/test-send", (TestEmailRequest req, HttpContext ctx) =>
 // Định dạng: /api/?key=...&macid=...&timestamp=...
 // Key mặc định: "09vjh9KZDp5t" (có thể tùy chỉnh động qua system_settings)
 // =========================================================================
-const string DEFAULT_DOOR_SECRET_KEY = "09vjh9KZDp5t";
 
 async Task<IResult> ProcessDoorLock(HttpContext ctx)
 {
@@ -4729,20 +4728,17 @@ async Task<IResult> ProcessDoorLock(HttpContext ctx)
         });
     }
 
-    // 2. Kiểm tra mã key (ưu tiên từ system_settings, mặc định là 09vjh9KZDp5t)
-    string expectedKey = DEFAULT_DOOR_SECRET_KEY;
+    // 2. Thời gian mở relay (xác thực thiết bị nằm ở DoorSecurity.VerifyDevice)
     int relaySeconds = 5;
     try
     {
         using var conn = Database.GetConnection();
-        var keySetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'");
-        if (!string.IsNullOrWhiteSpace(keySetting)) expectedKey = keySetting.Trim();
         var durSetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_relay_duration'");
         if (int.TryParse(durSetting, out var d) && d > 0) relaySeconds = d;
     }
     catch { }
 
-    bool isKeyValid = DoorSecurity.VerifyDevice(ctx, key, expectedKey) != null;   // [BẢO MẬT] chữ ký HMAC hoặc mã cũ
+    bool isKeyValid = DoorSecurity.VerifyDevice(ctx) != null;   // [BẢO MẬT] chữ ký HMAC
 
     // 3. Kiểm tra thẻ RFID nếu có truyền card_uid
     bool isGranted = false;
@@ -4916,16 +4912,7 @@ async Task HandleDoorLockRequest(HttpContext ctx)
 // Helper kiểm tra quyền quản lý thẻ (Key đúng HOẶC Admin/Leader)
 bool IsDoorManagerAuthorized(HttpContext ctx, string? providedKey)
 {
-    string expectedKey = DEFAULT_DOOR_SECRET_KEY;
-    try
-    {
-        using var conn = Database.GetConnection();
-        var keySetting = conn.QueryFirstOrDefault<string>("SELECT value FROM system_settings WHERE key = 'door_secret_key'");
-        if (!string.IsNullOrWhiteSpace(keySetting)) expectedKey = keySetting.Trim();
-    }
-    catch { }
-
-    if (DoorSecurity.VerifyDevice(ctx, providedKey, expectedKey) != null)   // [BẢO MẬT] thiết bị khóa
+    if (DoorSecurity.VerifyDevice(ctx) != null)   // [BẢO MẬT] thiết bị khóa
         return true;
 
     // [BẢO MẬT] không còn nhận mã khóa qua header X-Door-Key / Bearer; chỉ thiết bị (ký HMAC) hoặc admin đăng nhập
@@ -5556,8 +5543,8 @@ app.MapGet("/api/door/logs", (int? limit, int? offset, string? from, string? to,
 });
 
 // Endpoint lấy cấu hình khóa cửa hiện tại
-// [BẢO MẬT] Không trả mã khóa cũ. Bí mật HMAC chỉ trả khi admin bấm "Hiện" (reveal=1).
-app.MapGet("/api/door/settings", (HttpContext ctx, int? reveal) =>
+// [GỌN] Cấu hình khóa: chỉ thời gian mở relay. Bí mật HMAC không đi qua web (lấy bằng tools/lay_bi_mat.py).
+app.MapGet("/api/door/settings", (HttpContext ctx) =>
 {
     var u = AuthService.GetCurrentUser(ctx);
     if (u == null || u.role != "admin") return Results.StatusCode(403);
@@ -5568,9 +5555,7 @@ app.MapGet("/api/door/settings", (HttpContext ctx, int? reveal) =>
     return Results.Ok(new
     {
         success = true,
-        relay_duration = dur > 0 ? dur : 5,
-        legacy_key = DoorSecurity.LegacyKeyEnabled(conn) ? "on" : "off",
-        hmac_secret = reveal == 1 ? DoorSecurity.GetOrCreateSecret(conn) : null
+        relay_duration = dur > 0 ? dur : 5
     });
 });
 
@@ -5584,14 +5569,6 @@ app.MapPost("/api/door/settings", (DoorSettingsRequest req, HttpContext ctx) =>
     }
 
     using var conn = Database.GetConnection();
-    if (!string.IsNullOrWhiteSpace(req.key))
-    {
-        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_secret_key', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.key.Trim() });
-    }
-    if (req.legacy_key is "on" or "off")   // [BẢO MẬT] tắt mã cũ key= sau khi khóa đã nạp bản ký HMAC
-    {
-        conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_legacy_key', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.legacy_key });
-    }
     if (req.relay_duration.HasValue && req.relay_duration.Value > 0)
     {
         conn.Execute("INSERT INTO system_settings (key, value) VALUES ('door_relay_duration', @v) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", new { v = req.relay_duration.Value.ToString() });

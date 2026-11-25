@@ -54,10 +54,8 @@ public static class DoorSecurity
 
     public static void LoginSucceeded(string ip) => loginFails.TryRemove(ip, out _);
 
-    public static bool LegacyKeyEnabled(IDbConnection conn) => Setting(conn, "door_legacy_key") != "off";
-
-    // Trả ctr (>0) nếu chữ ký hợp lệ và ctr mới hơn lần trước; 0 nếu mã cũ key= đúng (mạng lab, còn bật); null nếu sai.
-    public static long? VerifyDevice(HttpContext ctx, string? key, string expectedKey)
+    // Trả ctr (>0) nếu chữ ký hợp lệ và ctr mới hơn lần trước; null nếu sai. Mã cũ key= đã bỏ hẳn.
+    public static long? VerifyDevice(HttpContext ctx)
     {
         if (IsFromInternet(ctx)) return null;
         using var conn = Database.GetConnection();
@@ -88,8 +86,6 @@ public static class DoorSecurity
             return ctr;
         }
 
-        if (!string.IsNullOrEmpty(key) && string.Equals(key.Trim(), expectedKey, StringComparison.Ordinal) && LegacyKeyEnabled(conn))
-            return 0;
         return null;
     }
 
@@ -103,7 +99,7 @@ public static class DoorSecurity
             {
                 using var c = Database.GetConnection();
                 GetOrCreateSecret(c);
-                c.Execute("DELETE FROM system_settings WHERE key = 'door_last_ctr'");   // mốc chung cũ, không dùng nữa
+                c.Execute("DELETE FROM system_settings WHERE key IN ('door_last_ctr', 'door_legacy_key', 'door_secret_key')");   // mốc/mã cũ, không dùng nữa
             }
             catch (Exception ex) { Console.WriteLine("[BẢO MẬT] không tạo được bí mật HMAC: " + ex.Message); }
         });
