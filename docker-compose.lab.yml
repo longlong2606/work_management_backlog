@@ -1,20 +1,41 @@
-# Chạy web lab bằng Docker: 1 container, giữ SQLite thật (data/), cổng 8000 cho khóa cửa ESP8266.
+# Web lab bằng Docker: PostgreSQL (dữ liệu trong volume workshift_pg) + web cổng 8000 cho khóa cửa ESP8266.
 # Chạy:   docker compose -f docker-compose.lab.yml up -d --build
 # Dừng:   docker compose -f docker-compose.lab.yml down
-# (docker-compose.yml gốc dùng PostgreSQL trống + cổng 8001: KHÔNG dùng cho khóa cửa.)
+# (docker-compose.yml gốc dùng cổng 8001 + frontend riêng: KHÔNG dùng cho khóa cửa.)
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: workshift-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: work_management
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secret_2026}
+    volumes:
+      - workshift_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d work_management"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    # Không khai báo ports: PostgreSQL chỉ truy cập trong mạng Docker
+
   web:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: workshift-lab
     restart: unless-stopped          # máy khởi động lại là web tự chạy
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      - DB_TYPE=sqlite
-      - DB_FILE=/app/data/work_management.db
+      - DB_TYPE=postgres
+      - CONNECTION_STRING=Host=db;Port=5432;Database=work_management;Username=postgres;Password=${POSTGRES_PASSWORD:-postgres_secret_2026}
       - ASPNETCORE_URLS=http://+:8000
       - ASPNETCORE_ENVIRONMENT=Production
     ports:
       - "8000:8000"                  # khóa gọi http://192.168.1.195:8000/api/
-    volumes:
-      - ./data:/app/data             # dữ liệu thật: tài khoản, thẻ, lịch sử, bí mật HMAC
+
+volumes:
+  workshift_pg: {}
