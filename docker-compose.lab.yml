@@ -1,0 +1,20 @@
+# Chạy web lab bằng Docker: 1 container, giữ SQLite thật (data/), cổng 8000 cho khóa cửa ESP8266.
+# Chạy:   docker compose -f docker-compose.lab.yml up -d --build
+# Dừng:   docker compose -f docker-compose.lab.yml down
+# (docker-compose.yml gốc dùng PostgreSQL trống + cổng 8001: KHÔNG dùng cho khóa cửa.)
+services:
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: workshift-lab
+    restart: unless-stopped          # máy khởi động lại là web tự chạy
+    environment:
+      - DB_TYPE=sqlite
+      - DB_FILE=/app/data/work_management.db
+      - ASPNETCORE_URLS=http://+:8000
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "8000:8000"                  # khóa gọi http://192.168.1.195:8000/api/
+    volumes:
+      - ./data:/app/data             # dữ liệu thật: tài khoản, thẻ, lịch sử, bí mật HMAC
