@@ -179,7 +179,7 @@ export function DoorLockPage() {
   const { user } = useAuth();
   const canManage = user?.role === "admin";   // [BẢO MẬT] chỉ admin (leader không còn quyền)
 
-  const [tab, setTab] = useState("cards"); // cards | history
+  const [tab, setTab] = useState("history"); // [GỌN] mở vào lịch sử: việc hằng ngày là xem ai vào lab
   const [cards, setCards] = useState([]);
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -437,8 +437,6 @@ export function DoorLockPage() {
   const stats = useMemo(() => {
     const t = parseLogs(todayLogs).filter((l) => dayKey(l.date) === today); // [LỌC NGÀY] không phụ thuộc khoảng đang xem
     return {
-      active: cards.filter((c) => c.is_active === 1).length,
-      total: cards.length,
       inToday: t.filter((l) => l.kind === "in").length,
       deniedToday: t.filter((l) => l.kind === "denied").length,
       last: t[0],
@@ -489,7 +487,6 @@ export function DoorLockPage() {
       <header className="dl-header">
         <div>
           <h1 className="dl-title">Khóa cửa lab</h1>
-          <p className="dl-subtitle">Quản lý thẻ ra vào và xem ai đã vào lab.</p>
         </div>
         <div className="dl-tools">
           <button type="button" className="dl-btn" onClick={() => { setLoading(true); loadAll(); }}>
@@ -516,11 +513,6 @@ export function DoorLockPage() {
 
       {/* Số liệu */}
       <section className="dl-stats" aria-label="Tóm tắt">
-        <div className="dl-stat">
-          <span className="dl-stat-label">Thẻ đang dùng</span>
-          <span className="dl-stat-value dl-num">{loading ? "–" : stats.active}</span>
-          <span className="dl-stat-hint dl-num">{stats.total - stats.active > 0 ? `${stats.total - stats.active} thẻ tạm khóa` : "Tất cả đang hoạt động"}</span>
-        </div>
         <div className="dl-stat">
           <span className="dl-stat-label">Lượt vào hôm nay</span>
           <span className="dl-stat-value dl-num">{loading ? "–" : stats.inToday}</span>
@@ -598,13 +590,12 @@ export function DoorLockPage() {
           ) : (
             <ul className="dl-list">
               <li className="dl-row dl-row--head" aria-hidden="true">
-                <span>Người dùng</span><span>Trạng thái</span><span>Ngày thêm</span><span />
+                <span>Người dùng</span><span>Trạng thái</span><span />
               </li>
               {visibleCards.map((c) => {
                 const ext = isExternal(c);   // thẻ Bảo vệ / Khách
                 const temp = !c.user_id && !ext;   // thẻ chưa gắn người trong Nhân sự
                 const oldName = temp && !isTempName(c.card_holder) ? c.card_holder : "";   // tên gõ tay trước đây
-                const added = parseLocal(c.created_at);
                 return (
                   <li key={c.id} className={`dl-row ${c.is_active ? "" : "dl-row--off"}`}>
                     <div className="dl-person">
@@ -636,7 +627,6 @@ export function DoorLockPage() {
                         <span className="dl-badge dl-badge--off">Tạm khóa</span>
                       )}
                     </span>
-                    <span className="dl-muted dl-num">{added ? added.toLocaleDateString("vi-VN") : "–"}</span>
                     <div className="dl-row-actions" hidden={!manage}>
                       <button type="button" className="dl-icon-btn" aria-label={`Đổi người dùng thẻ ${c.card_holder || ""}`} title="Đổi người" onClick={() => openEdit(c)}>
                         <Pencil size={16} />
