@@ -655,3 +655,7 @@
   .dl-scan-form, .dl-scan-actions { grid-column: 1 / -1; }
   .dl-scan-form { width: auto; }
 }
+
+/* [CHẠM ĐỂ THÊM] khung chờ thẻ mới */
+.dl-capture { display: grid; gap: 10px; padding: 8px 0; }
+.dl-capture p { margin: 0; }

@@ -48,6 +48,7 @@ const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDa
 
 // [LỌC NGÀY] khoảng ngày xem lịch sử: Hôm nay / 7 ngày / Tháng này / tự chọn (from, to dạng yyyy-MM-dd)
 const LOG_PAGE = 500; // mỗi lần lấy tối đa 500 lượt, còn nữa thì "Tải thêm"
+const CAPTURE_MS = 60000; // [CHẠM ĐỂ THÊM] chờ thẻ mới tối đa 60 giây
 function presetRange(preset) {
   const now = new Date();
   const to = dayKey(now);
@@ -202,6 +203,42 @@ export function DoorLockPage() {
 
   // Hộp thoại
   const [editing, setEditing] = useState(null); // null | {mode:'add'|'edit', card?}
+  // [CHẠM ĐỂ THÊM] chờ thẻ mới chạm vào khóa: hỏi web mỗi 2 giây, tối đa 60 giây
+  const [capture, setCapture] = useState(null); // null | {active, until, baseline, note, expired}
+  const [clock, setClock] = useState(Date.now());
+  const captureRef = useRef(null);
+  const cardsRef = useRef([]);
+  useEffect(() => { captureRef.current = capture; }, [capture]);
+  useEffect(() => { cardsRef.current = cards; }, [cards]);
+  useEffect(() => { if (!editing) setCapture(null); }, [editing]);
+  useEffect(() => {
+    if (!capture?.active) return undefined;
+    const tick = setInterval(() => setClock(Date.now()), 1000);
+    const poll = setInterval(async () => {
+      const c = captureRef.current;
+      if (!c?.active) return;
+      if (Date.now() >= c.until) { setCapture({ ...c, active: false, expired: true }); return; }
+      try {
+        const today = dayKey(new Date());
+        const r = await api.getDoorLogs({ limit: 50, from: today, to: today });
+        const cur = captureRef.current;
+        if (!cur?.active) return;
+        const seen = new Set(cur.baseline);
+        const hit = (r.logs || []).find((l) => !seen.has(l.id) && l.status === "denied" && l.card_uid && l.card_uid !== "EXIT");
+        if (!hit) return;
+        const mine = compactUid(hit.card_uid);
+        const existing = cardsRef.current.find((c2) => compactUid(c2.card_uid) === mine);
+        if (!existing) {
+          setForm((f) => ({ ...f, uid: prettyUid(hit.card_uid) }));
+          setCapture(null);
+        } else {
+          setCapture({ ...cur, baseline: [...cur.baseline, hit.id], note: `Thẻ này đã có${existing.card_holder ? ": " + existing.card_holder : ""}. Chạm thẻ khác.` });
+        }
+      } catch (e) { /* mạng chập chờn: thử lại lần sau */ }
+    }, 2000);
+    return () => { clearInterval(tick); clearInterval(poll); };
+  }, [capture?.active]);
+  const captureLeft = capture?.active ? Math.max(0, Math.ceil((capture.until - clock) / 1000)) : 0;
   const [form, setForm] = useState({ uid: "", type: "staff", user: null, name: "", note: "" });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -312,10 +349,22 @@ export function DoorLockPage() {
   };
 
   // ----- Thẻ -----
+  const startCapture = async () => {
+    let baseline = [];
+    try {
+      const today = dayKey(new Date());
+      const r = await api.getDoorLogs({ limit: 50, from: today, to: today });
+      baseline = (r.logs || []).map((l) => l.id);
+    } catch (e) { /* mạng chập chờn: vẫn chờ, có thể nhận nhầm lượt cũ */ }
+    setCapture({ active: true, until: Date.now() + CAPTURE_MS, baseline, note: "" });
+  };
   const openAdd = (uid = "") => {
-    setForm({ uid: typeof uid === "string" ? prettyUid(uid) : "", type: "staff", user: null, name: "", note: "" });
+    const fromHistory = typeof uid === "string" && uid !== "";   // "Thêm thẻ này" ở Lịch sử đã có mã
+    setForm({ uid: fromHistory ? prettyUid(uid) : "", type: "staff", user: null, name: "", note: "" });
     setFormError("");
     setEditing({ mode: "add" });
+    setCapture(null);
+    if (!fromHistory) startCapture();
   };
   const openEdit = (card) => {
     const type = isExternal(card) ? card.card_type : "staff";
@@ -769,24 +818,33 @@ export function DoorLockPage() {
       {/* Thêm thẻ / đổi người dùng thẻ */}
       <Modal
         open={!!editing}
-        onClose={() => !saving && setEditing(null)}
+        onClose={() => { if (!saving) { setEditing(null); setCapture(null); } }}
         title={editing?.mode === "edit" ? "Đổi người dùng thẻ" : "Thêm thẻ"}
       >
         <form className="dl-form" onSubmit={submitCard} noValidate>
-          <label className="dl-field">
+          {editing?.mode === "add" && !form.uid ? (
+            <div className="dl-capture" role="status" aria-live="polite">
+              {capture?.expired ? (
+                <>
+                  <p>Không thấy thẻ nào trong 60 giây.</p>
+                  <button type="button" className="dl-btn dl-btn--primary" onClick={startCapture}>Chờ lại</button>
+                </>
+              ) : (
+                <>
+                  <p><strong>Chạm thẻ mới vào khóa…</strong> <span className="dl-num">còn {captureLeft} giây</span></p>
+                  {capture?.note && <p className="dl-muted">{capture.note}</p>}
+                </>
+              )}
+              <div className="dl-form-actions">
+                <button type="button" className="dl-btn" onClick={() => setEditing(null)}>Hủy</button>
+              </div>
+            </div>
+          ) : (
+            <>
+          <div className="dl-field">
             <span>Mã thẻ</span>
-            <input
-              value={editing?.mode === "edit" ? prettyUid(form.uid) : form.uid}
-              onChange={(e) => setForm({ ...form, uid: e.target.value })}
-              placeholder="VD: 29 02 05 B3"
-              disabled={editing?.mode === "edit"}
-              autoComplete="off"
-              spellCheck={false}
-              className="dl-num"
-              data-autofocus={editing?.mode === "add" && !form.uid ? "" : undefined}
-            />
-            {editing?.mode === "add" && <small>Mã in trên thẻ, hoặc chạm thẻ vào khóa trong chế độ quản lý thẻ.</small>}
-          </label>
+            <strong className="dl-num">{prettyUid(form.uid)}</strong>
+          </div>
           <fieldset className="dl-field dl-type">
             <legend>Loại người dùng</legend>
             <div className="dl-type-options">
@@ -840,6 +898,8 @@ export function DoorLockPage() {
               {saving ? "Đang lưu…" : editing?.mode === "edit" ? "Lưu" : "Thêm thẻ"}
             </button>
           </div>
+            </>
+          )}
         </form>
       </Modal>
 
